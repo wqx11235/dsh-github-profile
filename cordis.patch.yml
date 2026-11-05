@@ -1,0 +1,5 @@
+- insert:
+    - id: github-profile
+      name: dsh-github-profile
+      config:
+        login: wqx11235
