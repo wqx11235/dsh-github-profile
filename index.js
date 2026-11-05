@@ -10,6 +10,8 @@
  * 若 ~/.dsh/gh-token.txt 存在则带上 Authorization，纯为抬高速率上限。
  */
 import { readFile } from 'node:fs/promises'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { zstdDecompressSync } from 'node:zlib'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -127,6 +129,86 @@ async function buildPayload(login, token) {
   }
 }
 
+
+/* ---------------------------------------------------- 本地活动（DSH 上干活） */
+
+/**
+ * 口径：以会话文件为颗粒。每个会话有「创建时间」（日志首帧里的 createdAt）
+ * 和「最后活动时间」（文件 mtime），二者之间的每一天都记一次活跃。
+ * 不解析压缩帧内容（会话日志是 7 千多段 zstd 拼接，逐帧解不划算）。
+ */
+export async function buildActivity() {
+  const root = join(homedir(), '.dsh', 'sessions')
+  const files = []
+  const walk = (dir, depth) => {
+    if (depth > 4) return
+    let entries = []
+    try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      const p = join(dir, e.name)
+      if (e.isDirectory()) walk(p, depth + 1)
+      else if (e.name.endsWith('.jsonl.zstd')) files.push(p)
+    }
+  }
+  walk(root, 0)
+
+  const dayKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  const counts = new Map()
+
+  for (const file of files) {
+    let start = null
+    let end = null
+    try {
+      const st = statSync(file)
+      end = new Date(st.mtime)
+      const head = zstdDecompressSync(readFileSync(file)).toString('utf8').split('\n')[0]
+      const obj = JSON.parse(head)
+      const ms = Number(obj.createdAt)
+      start = Number.isFinite(ms) ? new Date(ms) : new Date(end)
+    } catch {
+      try { start = new Date(statSync(file).mtime) } catch { continue }
+    }
+    if (!start || !end) continue
+    if (start > end) { const t = start; start = end; end = t }
+    // 上限 60 天，避免异常时间戳把区间拉爆
+    const guard = new Date(start)
+    for (let i = 0; i < 61; i++) {
+      const d = new Date(guard)
+      d.setDate(d.getDate() + i)
+      if (d > end) break
+      const k = dayKey(d)
+      counts.set(k, (counts.get(k) ?? 0) + 1)
+    }
+  }
+
+  // 组装 53 周 × 7 天
+  const end = new Date(); end.setHours(0, 0, 0, 0)
+  const startD = new Date(end)
+  startD.setDate(startD.getDate() - 364)
+  startD.setDate(startD.getDate() - startD.getDay())
+  const days = []
+  for (const cur = new Date(startD); cur <= end; cur.setDate(cur.getDate() + 1)) {
+    const k = dayKey(cur)
+    days.push({ date: k, n: counts.get(k) ?? 0 })
+  }
+  const max = Math.max(1, ...days.map((d) => d.n))
+  // 分四档（按活跃会话数）
+  const level = (n) => (n === 0 ? 0 : n <= max * 0.25 ? 1 : n <= max * 0.5 ? 2 : n <= max * 0.75 ? 3 : 4)
+  const weeks = []
+  for (let i = 0; i < days.length; i += 7) {
+    weeks.push(days.slice(i, i + 7).map((d) => ({ date: d.date, level: level(d.n), count: d.n })))
+  }
+  const total = days.reduce((a, d) => a + d.n, 0)
+  // 连续天数：今天还没活动就从昨天算起（与 GitHub 口径一致）
+  let streak = 0
+  let i = days.length - 1
+  if (i >= 0 && days[i].n === 0) i--
+  for (; i >= 0; i--) {
+    if (days[i].n > 0) streak++
+    else break
+  }
+  return { total, streak, weeks, days: days.length, sessions: files.length }
+}
 function sendJson(res, code, body) {
   const buf = Buffer.from(JSON.stringify(body), 'utf8')
   res.writeHead(code, {
@@ -179,4 +261,25 @@ export function apply(ctx, config) {
       }
     },
   }), 'dsh-github-profile: /gh-profile/data')
+
+  // 本地活动热力图：口径是「会话存活区间」，见 buildActivity 注释
+  let actCache = { at: 0, data: null }
+  ctx.effect(() => webServer.register({
+    kind: 'exact',
+    path: '/gh-profile/activity',
+    handler: async (req, res) => {
+      const now = Date.now()
+      if (actCache.data && now - actCache.at < TTL_MS) {
+        return sendJson(res, 200, { ...actCache.data, cached: true })
+      }
+      try {
+        const calendar = await buildActivity()
+        const payload = { ok: true, fetchedAt: new Date().toISOString(), calendar }
+        actCache = { at: Date.now(), data: payload }
+        sendJson(res, 200, payload)
+      } catch (err) {
+        sendJson(res, 500, { ok: false, error: String(err && err.message ? err.message : err) })
+      }
+    },
+  }), 'dsh-github-profile: /gh-profile/activity')
 }

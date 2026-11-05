@@ -9,6 +9,7 @@ window.__ModuleLoader__.load({
 
     const PANEL_ID = 'github-profile'
     const API = '/gh-profile/data'
+    const ACT_API = '/gh-profile/activity'
 
     const css = `
 .ghp-root { height: 100%; overflow: auto; padding: 20px 24px 64px;
@@ -56,6 +57,17 @@ window.__ModuleLoader__.load({
 .ghp-legend { display: flex; align-items: center; gap: 6px; font-size: 11px;
   color: var(--dsw-alias-label-secondary); margin-top: 10px; }
 .ghp-legend-right { margin-left: auto; display: flex; gap: 12px; align-items: center; }
+.ghp-cardhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.ghp-cardhead h3 { margin: 0; }
+.ghp-seg { display: flex; border: 1px solid var(--dsw-alias-border-l1); border-radius: 8px; overflow: hidden; }
+.ghp-seg button { font: inherit; font-size: 12px; padding: 4px 10px; border: 0; cursor: pointer;
+  background: transparent; color: var(--dsw-alias-label-secondary); }
+.ghp-seg button[data-on="1"] { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
+.ghp-root.blue .ghp-cell { background: #e3edf7; }
+.ghp-root.blue .ghp-cell[data-l="1"] { background: #a9cbe8; }
+.ghp-root.blue .ghp-cell[data-l="2"] { background: #6ea8d8; }
+.ghp-root.blue .ghp-cell[data-l="3"] { background: #3d7fbe; }
+.ghp-root.blue .ghp-cell[data-l="4"] { background: #1b4f86; }
 .ghp-repos { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
 .ghp-repo { background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l1);
   border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
@@ -188,6 +200,21 @@ window.__ModuleLoader__.load({
 
       useEffect(() => { if (login) load(login) }, [login, load])
 
+      // 模式：github = 远程贡献；dsh = 本地干活（蓝色）。切过去才拉本地数据。
+      const [mode, setMode] = useState('github')
+      const [act, setAct] = useState({ loading: false, error: null, data: null })
+      useEffect(() => {
+        if (mode !== 'dsh' || act.data || act.loading) return
+        setAct({ loading: true, error: null, data: null })
+        fetch(ACT_API, { credentials: 'same-origin' })
+          .then((r) => r.json())
+          .then((j) => {
+            if (!j || j.ok === false) throw new Error((j && j.error) || '取数失败')
+            setAct({ loading: false, error: null, data: j })
+          })
+          .catch((e) => setAct({ loading: false, error: String(e.message || e), data: null }))
+      }, [mode, act.data, act.loading])
+
       const submit = () => {
         const user = draft.trim().replace(/^@/, '')
         if (!user) return
@@ -201,7 +228,7 @@ window.__ModuleLoader__.load({
       const repos = data && data.repos ? data.repos : []
       const stars = repos.reduce((a, r) => a + (r.stars || 0), 0)
 
-      return h('div', { className: 'ghp-root' },
+      return h('div', { className: 'ghp-root' + (mode === 'dsh' ? ' blue' : '') },
         h(Styles),
         h('div', { className: 'ghp-wrap' },
           h('div', { className: 'ghp-head' },
@@ -242,8 +269,22 @@ window.__ModuleLoader__.load({
           error ? h('div', { className: 'ghp-err' }, `读不到数据：${error}`) : null,
           login
             ? h('div', { className: 'ghp-card' },
-                h('h3', null, '贡献热力图'),
-                data ? h(Heatmap, { calendar: data.calendar }) : h('div', { className: 'ghp-empty' }, '加载中…'))
+                h('div', { className: 'ghp-cardhead' },
+                  h('h3', null, mode === 'dsh' ? 'DSH 工作热力图' : '贡献热力图'),
+                  h('div', { className: 'ghp-seg' },
+                    h('button', { 'data-on': mode === 'github' ? '1' : '0', onClick: () => setMode('github') }, 'GitHub'),
+                    h('button', { 'data-on': mode === 'dsh' ? '1' : '0', onClick: () => setMode('dsh') }, 'DSH'),
+                  ),
+                ),
+                mode === 'github'
+                  ? (data ? h(Heatmap, { calendar: data.calendar }) : h('div', { className: 'ghp-empty' }, '加载中…'))
+                  : (act.data
+                      ? h(Heatmap, { calendar: act.data.calendar })
+                      : h('div', { className: 'ghp-empty' }, act.error ? `读不到本地记录：${act.error}` : '统计中…')),
+                mode === 'dsh'
+                  ? h('div', { style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', marginTop: 6 } },
+                      '口径：本地会话的存活区间（创建到最近活动），每天算一次活跃。')
+                  : null)
             : null,
           login
             ? h('div', { className: 'ghp-card' },
