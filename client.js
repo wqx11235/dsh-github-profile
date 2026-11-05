@@ -206,13 +206,21 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         if (mode !== 'dsh' || act.data || act.loading) return
         setAct({ loading: true, error: null, data: null })
-        fetch(ACT_API, { credentials: 'same-origin' })
-          .then((r) => r.json())
+        const ctl = new AbortController()
+        const timer = setTimeout(() => ctl.abort(), 20000)
+        fetch(ACT_API, { credentials: 'same-origin', signal: ctl.signal })
+          .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
           .then((j) => {
             if (!j || j.ok === false) throw new Error((j && j.error) || '取数失败')
+            clearTimeout(timer)
             setAct({ loading: false, error: null, data: j })
           })
-          .catch((e) => setAct({ loading: false, error: String(e.message || e), data: null }))
+          .catch((e) => {
+            clearTimeout(timer)
+            const msg = String(e && e.name === 'AbortError' ? '超时（20 秒）' : (e.message || e))
+            setAct({ loading: false, error: msg, data: null })
+          })
+        return () => { clearTimeout(timer); ctl.abort() }
       }, [mode, act.data, act.loading])
 
       const submit = () => {
