@@ -39,9 +39,11 @@ window.__ModuleLoader__.load({
   border-radius: 14px; padding: 16px 18px; }
 .ghp-card h3 { margin: 0 0 12px; font-size: 13px; font-weight: 600; letter-spacing: .02em;
   color: var(--dsw-alias-label-secondary); text-transform: uppercase; }
-.ghp-heat { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 4px; }
-.ghp-months { display: grid; grid-auto-flow: column; gap: 3px; font-size: 11px;
+.ghp-heat { overflow-x: auto; padding-bottom: 4px; }
+.ghp-inner { display: inline-block; }
+.ghp-months { display: grid; gap: 3px; font-size: 11px; margin-bottom: 3px;
   color: var(--dsw-alias-label-secondary); }
+.ghp-month { white-space: nowrap; overflow: visible; }
 .ghp-grid { display: grid; grid-auto-flow: column; gap: 3px; }
 .ghp-col { display: grid; grid-template-rows: repeat(7, 11px); gap: 3px; }
 .ghp-cell { width: 11px; height: 11px; border-radius: 2.5px; background: #ebedf0;
@@ -91,26 +93,44 @@ window.__ModuleLoader__.load({
         return h('div', { className: 'ghp-empty' }, '没有贡献数据')
       }
       const weeks = calendar.weeks
-      const months = []
+      const COLS = weeks.length
+      const colW = 11
+      const gap = 3
+      const innerW = COLS * colW + (COLS - 1) * gap
+
+      // 每个「换月」的那一周单独标一次，按列号定位：月份与格子共用同一套列宽，不会错位
+      const monthMarks = []
       let lastMonth = -1
-      weeks.forEach((week) => {
+      weeks.forEach((week, i) => {
         const first = week[0]
-        if (!first) { months.push(''); return }
+        if (!first) return
         const m = Number(first.date.slice(5, 7))
-        if (m !== lastMonth) { lastMonth = m; months.push(`${m}月`) } else months.push('')
+        if (m !== lastMonth) { lastMonth = m; monthMarks.push({ col: i + 1, label: `${m}月` }) }
       })
+
       return h('div', null,
         h('div', { className: 'ghp-heat', ref: scroller },
-          h('div', { className: 'ghp-months' },
-            months.map((label, i) => h('div', { key: i, style: { width: 11 } }, label))),
-          h('div', { className: 'ghp-grid' },
-            weeks.map((week, wi) => h('div', { className: 'ghp-col', key: wi },
-              week.map((day) => h('div', {
-                key: day.date,
-                className: 'ghp-cell',
-                'data-l': String(day.level),
-                title: `${day.date} · ${day.level > 0 ? '有贡献' : '无贡献'}`,
-              }))))),
+          h('div', { className: 'ghp-inner', style: { width: innerW } },
+            h('div', {
+              className: 'ghp-months',
+              style: { gridTemplateColumns: `repeat(${COLS}, ${colW}px)`, columnGap: gap },
+            },
+              monthMarks.map((mk) => h('div', {
+                key: mk.col, className: 'ghp-month',
+                style: { gridColumnStart: mk.col },
+              }, mk.label))),
+            h('div', {
+              className: 'ghp-grid',
+              style: { gridTemplateColumns: `repeat(${COLS}, ${colW}px)`, columnGap: gap },
+            },
+              weeks.map((week, wi) => h('div', { className: 'ghp-col', key: wi },
+                week.map((day) => h('div', {
+                  key: day.date,
+                  className: 'ghp-cell',
+                  'data-l': String(day.level),
+                  title: `${day.date} · ${day.level > 0 ? '有贡献' : '无贡献'}`,
+                }))))),
+          ),
         ),
         h('div', { className: 'ghp-legend' },
           h('span', null, '少'),
