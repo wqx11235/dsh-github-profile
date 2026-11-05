@@ -10,12 +10,14 @@
  * 若 ~/.dsh/gh-token.txt 存在则带上 Authorization，纯为抬高速率上限。
  */
 import { readFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 
 export const inject = ['webServer']
 
 const UA = 'dsh-github-profile/0.1.0'
 const TTL_MS = 10 * 60 * 1000
-const DEFAULT_TOKEN_FILE = 'C:/Users/37/.dsh/gh-token.txt'
+const DEFAULT_TOKEN_FILE = join(homedir(), '.dsh', 'gh-token.txt')
 
 let cache = { at: 0, login: '', data: null }
 

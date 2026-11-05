@@ -53,7 +53,7 @@ dsh plugin --profile <你的 profile> add /absolute/path/to/dsh-github-profile
 
 ```yaml
 login: your-github-login      # 默认用户名，留空则每次在页面上填
-tokenFile: C:/Users/you/.dsh/gh-token.txt   # 可选 token 文件
+tokenFile: ~/.dsh/gh-token.txt   # 可选 token 文件（默认就是它）
 ```
 
 ## 实现要点
