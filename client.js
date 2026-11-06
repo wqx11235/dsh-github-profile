@@ -10,6 +10,157 @@ window.__ModuleLoader__.load({
     const PANEL_ID = 'github-profile'
     const API = '/gh-profile/data'
     const ACT_API = '/gh-profile/activity'
+    const LOGIN_KEY = 'ghp.login'
+
+    /* ------------------------------------------------------------ 文案 */
+
+    const LANG = (typeof navigator !== 'undefined' && String(navigator.language || '').toLowerCase().startsWith('zh'))
+      ? 'zh' : 'en'
+
+    const STRINGS = {
+      zh: {
+        title: 'GitHub 档案',
+        notSet: '还没设置用户',
+        placeholder: '你的 GitHub 用户名',
+        start: '开始',
+        read: '读取',
+        reading: '读取中…',
+        reposPublic: '公开仓库',
+        stars: '总星标',
+        followers: '关注者',
+        yearContribs: '一年贡献',
+        streakDays: '连续天数',
+        getStarted: '开始使用',
+        getStartedBody: '在右上角填你的 GitHub 用户名，点「开始」。读的是公开信息，不需要登录，也不会上传任何东西。',
+        getStartedToken: '想让私有仓库也显示（可选）：把带 repo 权限的 token 存到 ~/.dsh/gh-token.txt，插件会只读使用它。',
+        loadFailed: '读不到数据：',
+        heatmap: '贡献热力图',
+        heatmapDsh: 'DSH 工作热力图',
+        loading: '加载中…',
+        loadFailedLocal: '读不到本地记录：',
+        counting: '统计中…',
+        retry: '重试',
+        timeout: '超时（20 秒）',
+        dshNote: '口径：本地会话的存活区间（创建到最近活动），每天算一次活跃。',
+        reposTitle: '仓库',
+        noRepos: '没有公开仓库',
+        noData: '没有贡献数据',
+        less: '少',
+        more: '多',
+        totalYear: (n) => `一年共 ${n} 次`,
+        streak: (n) => `连续 ${n} 天`,
+        hasContribution: '有贡献',
+        noContribution: '无贡献',
+        updated: (d) => `更新 ${d}`,
+        noDesc: '（无描述）',
+        month: (m) => `${m}月`,
+      },
+      en: {
+        title: 'GitHub profile',
+        notSet: 'no user set yet',
+        placeholder: 'your GitHub username',
+        start: 'Start',
+        read: 'Load',
+        reading: 'Loading…',
+        reposPublic: 'public repos',
+        stars: 'stars',
+        followers: 'followers',
+        yearContribs: 'last year',
+        streakDays: 'day streak',
+        getStarted: 'Getting started',
+        getStartedBody: 'Type your GitHub username in the field above and press Start. It reads public data only — no sign-in, nothing uploaded.',
+        getStartedToken: 'Optional: to include private repos, put a token with repo scope at ~/.dsh/gh-token.txt; the plugin only reads it.',
+        loadFailed: 'Could not load: ',
+        heatmap: 'Contribution heatmap',
+        heatmapDsh: 'DSH work heatmap',
+        loading: 'Loading…',
+        loadFailedLocal: 'Could not read local records: ',
+        counting: 'Counting…',
+        retry: 'Retry',
+        timeout: 'timed out (20s)',
+        dshNote: 'Basis: span of each local session (created → last activity); one active mark per day.',
+        reposTitle: 'Repositories',
+        noRepos: 'No public repositories',
+        noData: 'No contribution data',
+        less: 'Less',
+        more: 'More',
+        totalYear: (n) => `${n} in the last year`,
+        streak: (n) => `${n}-day streak`,
+        hasContribution: 'contributions',
+        noContribution: 'no contributions',
+        updated: (d) => `updated ${d}`,
+        noDesc: '(no description)',
+        month: (m) => ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m - 1],
+      },
+    }
+
+    const t = STRINGS[LANG]
+
+    /* ------------------------------------------------------------ 配色（跟随宿主深浅色） */
+
+    // GitHub 官方亮/暗两套绿；蓝色是本地活动用的同构色阶
+    const PALETTES = {
+      green: {
+        light: ['#ebedf0', '#9be9a8', '#40c463', '#30a14e', '#216e39'],
+        dark: ['#161b22', '#0e4429', '#006d32', '#26a641', '#39d353'],
+      },
+      blue: {
+        light: ['#e3edf7', '#a9cbe8', '#6ea8d8', '#3d7fbe', '#1b4f86'],
+        dark: ['#12212e', '#12384f', '#1b5d82', '#2f8cc4', '#57b6ea'],
+      },
+    }
+
+    function parseColor(value) {
+      if (!value) return null
+      const v = value.trim()
+      let m = /^#([0-9a-f]{3})$/i.exec(v)
+      if (m) return m[1].split('').map((c) => parseInt(c + c, 16))
+      m = /^#([0-9a-f]{6})$/i.exec(v)
+      if (m) return [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16))
+      m = /^rgba?\(([^)]+)\)$/i.exec(v)
+      if (m) {
+        const parts = m[1].split(',').map((s) => parseFloat(s))
+        if (parts.length >= 3 && parts.every((n) => Number.isFinite(n))) return [parts[0], parts[1], parts[2]]
+      }
+      return null
+    }
+
+    // 看宿主主背景的亮度，而不是只看系统偏好：DSH 的主题是应用内设置
+    function isDarkTheme() {
+      try {
+        const bg = getComputedStyle(document.documentElement).getPropertyValue('--dsw-alias-bg-base')
+        const rgb = parseColor(bg)
+        if (rgb) {
+          const lum = (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255
+          return lum < 0.5
+        }
+      } catch { /* 取不到就退回系统偏好 */ }
+      try { return window.matchMedia('(prefers-color-scheme: dark)').matches } catch { return false }
+    }
+
+    function useDarkTheme() {
+      const [dark, setDark] = useState(isDarkTheme)
+      useEffect(() => {
+        let obs = null
+        const sync = () => setDark(isDarkTheme())
+        try {
+          obs = new MutationObserver(sync)
+          obs.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme', 'style'] })
+        } catch { /* 不支持就算了 */ }
+        let mq = null
+        try {
+          mq = window.matchMedia('(prefers-color-scheme: dark)')
+          mq.addEventListener('change', sync)
+        } catch { /* 忽略 */ }
+        return () => {
+          if (obs) obs.disconnect()
+          if (mq) { try { mq.removeEventListener('change', sync) } catch { /* 忽略 */ } }
+        }
+      }, [])
+      return dark
+    }
+
+    /* ------------------------------------------------------------ 样式 */
 
     const css = `
 .ghp-root { height: 100%; overflow: auto; padding: 20px 24px 64px;
@@ -36,6 +187,7 @@ window.__ModuleLoader__.load({
   color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-2);
   border: 1px solid var(--dsw-alias-border-l1); }
 .ghp-btn:hover { border-color: var(--dsw-alias-border-l2); }
+.ghp-btn:disabled { opacity: .6; cursor: default; }
 .ghp-card { background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l1);
   border-radius: 14px; padding: 16px 18px; }
 .ghp-card h3 { margin: 0 0 12px; font-size: 13px; font-weight: 600; letter-spacing: .02em;
@@ -47,12 +199,12 @@ window.__ModuleLoader__.load({
 .ghp-month { white-space: nowrap; overflow: visible; }
 .ghp-grid { display: grid; grid-auto-flow: column; gap: 3px; }
 .ghp-col { display: grid; grid-template-rows: repeat(7, 13px); gap: 4px; }
-.ghp-cell { width: 13px; height: 13px; border-radius: 3px; background: #ebedf0;
+.ghp-cell { width: 13px; height: 13px; border-radius: 3px; background: var(--ghp-l0, #ebedf0);
   outline: 1px solid transparent; }
-.ghp-cell[data-l="1"] { background: #9be9a8; }
-.ghp-cell[data-l="2"] { background: #40c463; }
-.ghp-cell[data-l="3"] { background: #30a14e; }
-.ghp-cell[data-l="4"] { background: #216e39; }
+.ghp-cell[data-l="1"] { background: var(--ghp-l1, #9be9a8); }
+.ghp-cell[data-l="2"] { background: var(--ghp-l2, #40c463); }
+.ghp-cell[data-l="3"] { background: var(--ghp-l3, #30a14e); }
+.ghp-cell[data-l="4"] { background: var(--ghp-l4, #216e39); }
 .ghp-cell:hover { outline-color: var(--dsw-alias-border-l2); }
 .ghp-legend { display: flex; align-items: center; gap: 6px; font-size: 11px;
   color: var(--dsw-alias-label-secondary); margin-top: 10px; }
@@ -63,11 +215,6 @@ window.__ModuleLoader__.load({
 .ghp-seg button { font: inherit; font-size: 12px; padding: 4px 10px; border: 0; cursor: pointer;
   background: transparent; color: var(--dsw-alias-label-secondary); }
 .ghp-seg button[data-on="1"] { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
-.ghp-root.blue .ghp-cell { background: #e3edf7; }
-.ghp-root.blue .ghp-cell[data-l="1"] { background: #a9cbe8; }
-.ghp-root.blue .ghp-cell[data-l="2"] { background: #6ea8d8; }
-.ghp-root.blue .ghp-cell[data-l="3"] { background: #3d7fbe; }
-.ghp-root.blue .ghp-cell[data-l="4"] { background: #1b4f86; }
 .ghp-repos { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
 .ghp-repo { background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l1);
   border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
@@ -81,6 +228,7 @@ window.__ModuleLoader__.load({
 .ghp-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
 .ghp-empty, .ghp-err { font-size: 14px; color: var(--dsw-alias-label-secondary); padding: 24px 0; text-align: center; }
 .ghp-err { color: var(--dsw-alias-state-error-primary); }
+.ghp-note { font-size: 11px; color: var(--dsw-alias-label-secondary); margin-top: 6px; }
 `
 
     function Styles() {
@@ -93,6 +241,8 @@ window.__ModuleLoader__.load({
         h('span', null, label))
     }
 
+    /* ------------------------------------------------------------ 热力图 */
+
     function Heatmap({ calendar }) {
       const scroller = React.useRef(null)
       useEffect(() => {
@@ -102,7 +252,7 @@ window.__ModuleLoader__.load({
       }, [calendar])
 
       if (!calendar || !calendar.weeks || calendar.weeks.length === 0) {
-        return h('div', { className: 'ghp-empty' }, '没有贡献数据')
+        return h('div', { className: 'ghp-empty' }, t.noData)
       }
       const weeks = calendar.weeks
       const COLS = weeks.length
@@ -117,7 +267,7 @@ window.__ModuleLoader__.load({
         const first = week[0]
         if (!first) return
         const m = Number(first.date.slice(5, 7))
-        if (m !== lastMonth) { lastMonth = m; monthMarks.push({ col: i + 1, label: `${m}月` }) }
+        if (m !== lastMonth) { lastMonth = m; monthMarks.push({ col: i + 1, label: t.month(m) }) }
       })
 
       return h('div', null,
@@ -140,17 +290,17 @@ window.__ModuleLoader__.load({
                   key: day.date,
                   className: 'ghp-cell',
                   'data-l': String(day.level),
-                  title: `${day.date} · ${day.level > 0 ? '有贡献' : '无贡献'}`,
+                  title: `${day.date} · ${day.level > 0 ? t.hasContribution : t.noContribution}`,
                 }))))),
           ),
         ),
         h('div', { className: 'ghp-legend' },
-          h('span', null, '少'),
+          h('span', null, t.less),
           [0, 1, 2, 3, 4].map((l) => h('span', { key: l, className: 'ghp-cell', 'data-l': String(l) })),
-          h('span', null, '多'),
+          h('span', null, t.more),
           h('div', { className: 'ghp-legend-right' },
-            calendar.total != null ? h('span', null, `一年共 ${calendar.total} 次`) : null,
-            calendar.streak ? h('span', null, `连续 ${calendar.streak} 天`) : null,
+            calendar.total != null ? h('span', null, t.totalYear(calendar.total)) : null,
+            calendar.streak ? h('span', null, t.streak(calendar.streak)) : null,
           ),
         ),
       )
@@ -159,7 +309,7 @@ window.__ModuleLoader__.load({
     function RepoCard({ repo }) {
       return h('div', { className: 'ghp-repo' },
         h('a', { href: repo.url, target: '_blank', rel: 'noreferrer' }, repo.name),
-        h('p', null, repo.description || '（无描述）'),
+        h('p', null, repo.description || t.noDesc),
         h('div', { className: 'ghp-meta' },
           repo.language
             ? h('span', { style: { display: 'flex', alignItems: 'center', gap: 5 } },
@@ -168,14 +318,15 @@ window.__ModuleLoader__.load({
             : null,
           h('span', null, `★ ${repo.stars}`),
           repo.fork ? h('span', null, 'fork') : null,
-          repo.updatedAt ? h('span', null, `更新 ${repo.updatedAt.slice(0, 10)}`) : null,
+          repo.updatedAt ? h('span', null, t.updated(repo.updatedAt.slice(0, 10))) : null,
         ),
       )
     }
 
-    const LOGIN_KEY = 'ghp.login'
+    /* ------------------------------------------------------------ 页面 */
 
     function GithubPanel() {
+      const dark = useDarkTheme()
       const [login, setLogin] = useState(() => {
         try { return localStorage.getItem(LOGIN_KEY) || '' } catch { return '' }
       })
@@ -190,12 +341,12 @@ window.__ModuleLoader__.load({
         }
         setState((s) => ({ ...s, loading: true, error: null }))
         fetch(`${API}?login=${encodeURIComponent(user)}`, { credentials: 'same-origin' })
-          .then((r) => r.json())
+          .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
           .then((data) => {
-            if (!data || data.ok === false) throw new Error((data && data.error) || '取数失败')
+            if (!data || data.ok === false) throw new Error((data && (LANG === 'zh' ? data.errorZh : data.error)) || (data && data.error) || 'request failed')
             setState({ loading: false, error: null, data })
           })
-          .catch((err) => setState({ loading: false, error: String(err.message || err), data: null }))
+          .catch((err) => setState({ loading: false, error: String((err && err.message) || err), data: null }))
       }, [])
 
       useEffect(() => { if (login) load(login) }, [login, load])
@@ -217,11 +368,11 @@ window.__ModuleLoader__.load({
         fetch(ACT_API, { credentials: 'same-origin', signal: ctl.signal })
           .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
           .then((j) => {
-            if (!j || j.ok === false) throw new Error((j && j.error) || '取数失败')
+            if (!j || j.ok === false) throw new Error((j && (LANG === 'zh' ? j.errorZh : j.error)) || (j && j.error) || 'request failed')
             setAct({ loading: false, error: null, data: j })
           })
           .catch((e) => {
-            const msg = e && e.name === 'AbortError' ? '超时（20 秒）' : String((e && e.message) || e)
+            const msg = e && e.name === 'AbortError' ? t.timeout : String((e && e.message) || e)
             setAct({ loading: false, error: msg, data: null })
           })
           .then(() => { if (timer) clearTimeout(timer) })
@@ -241,87 +392,99 @@ window.__ModuleLoader__.load({
       const repos = data && data.repos ? data.repos : []
       const stars = repos.reduce((a, r) => a + (r.stars || 0), 0)
 
-      return h('div', { className: 'ghp-root' + (mode === 'dsh' ? ' blue' : '') },
+      // 色阶：跟着模式（绿/蓝）与宿主深浅色走，内联成 CSS 变量给格子用
+      const palette = (mode === 'dsh' ? PALETTES.blue : PALETTES.green)[dark ? 'dark' : 'light']
+      const paletteVars = {
+        '--ghp-l0': palette[0],
+        '--ghp-l1': palette[1],
+        '--ghp-l2': palette[2],
+        '--ghp-l3': palette[3],
+        '--ghp-l4': palette[4],
+      }
+
+      return h('div', { className: 'ghp-root', style: paletteVars },
         h(Styles),
         h('div', { className: 'ghp-wrap' },
           h('div', { className: 'ghp-head' },
             p && p.avatar ? h('img', { className: 'ghp-avatar', src: p.avatar, alt: p.login }) : null,
             h('div', { className: 'ghp-id' },
-              h('div', { className: 'ghp-name' }, p ? p.name : 'GitHub 档案'),
-              h('div', { className: 'ghp-login' }, p ? `@${p.login}` : (login ? `@${login}` : '还没设置用户')),
+              h('div', { className: 'ghp-name' }, p ? p.name : t.title),
+              h('div', { className: 'ghp-login' }, p ? `@${p.login}` : (login ? `@${login}` : t.notSet)),
               p && p.bio ? h('div', { className: 'ghp-bio' }, p.bio) : null,
               p ? h('div', { className: 'ghp-stats' },
-                h(Stat, { value: p.publicRepos, label: '公开仓库' }),
-                h(Stat, { value: stars, label: '总星标' }),
-                h(Stat, { value: p.followers, label: '关注者' }),
-                h(Stat, { value: data.calendar && data.calendar.total != null ? data.calendar.total : '—', label: '一年贡献' }),
-                h(Stat, { value: data.calendar && data.calendar.streak ? data.calendar.streak : 0, label: '连续天数' }),
+                h(Stat, { value: p.publicRepos, label: t.reposPublic }),
+                h(Stat, { value: stars, label: t.stars }),
+                h(Stat, { value: p.followers, label: t.followers }),
+                h(Stat, {
+                  value: data.calendar && data.calendar.total != null ? data.calendar.total : '—',
+                  label: t.yearContribs,
+                }),
+                h(Stat, { value: data.calendar && data.calendar.streak ? data.calendar.streak : 0, label: t.streakDays }),
               ) : null,
             ),
             h('div', { className: 'ghp-actions' },
               h('input', {
                 className: 'ghp-input',
-                placeholder: '你的 GitHub 用户名',
+                placeholder: t.placeholder,
                 value: draft,
                 spellCheck: false,
                 onChange: (e) => setDraft(e.target.value),
                 onKeyDown: (e) => { if (e.key === 'Enter') submit() },
               }),
               h('button', { className: 'ghp-btn', onClick: submit, disabled: loading },
-                loading ? '读取中…' : (login ? '读取' : '开始')),
+                loading ? t.reading : (login ? t.read : t.start)),
             ),
           ),
           !login && !error
             ? h('div', { className: 'ghp-card' },
-                h('h3', null, '开始使用'),
+                h('h3', null, t.getStarted),
                 h('p', { style: { margin: 0, fontSize: 13, lineHeight: 1.7, color: 'var(--dsw-alias-label-secondary)' } },
-                  '在右上角填你的 GitHub 用户名，点「开始」。读的是公开信息，不需要登录，也不会上传任何东西。',
+                  t.getStartedBody,
                   h('br'),
-                  '想让私有仓库也显示（可选）：把带 repo 权限的 token 存到 ~/.dsh/gh-token.txt，插件会只读使用它。'))
+                  t.getStartedToken))
             : null,
-          error ? h('div', { className: 'ghp-err' }, `读不到数据：${error}`) : null,
+          error ? h('div', { className: 'ghp-err' }, t.loadFailed + error) : null,
           login
             ? h('div', { className: 'ghp-card' },
                 h('div', { className: 'ghp-cardhead' },
-                  h('h3', null, mode === 'dsh' ? 'DSH 工作热力图' : '贡献热力图'),
+                  h('h3', null, mode === 'dsh' ? t.heatmapDsh : t.heatmap),
                   h('div', { className: 'ghp-seg' },
                     h('button', { 'data-on': mode === 'github' ? '1' : '0', onClick: () => setMode('github') }, 'GitHub'),
                     h('button', { 'data-on': mode === 'dsh' ? '1' : '0', onClick: () => setMode('dsh') }, 'DSH'),
                   ),
                 ),
                 mode === 'github'
-                  ? (data ? h(Heatmap, { calendar: data.calendar }) : h('div', { className: 'ghp-empty' }, '加载中…'))
+                  ? (data ? h(Heatmap, { calendar: data.calendar }) : h('div', { className: 'ghp-empty' }, t.loading))
                   : (act.data
                       ? h(Heatmap, { calendar: act.data.calendar })
                       : h('div', { className: 'ghp-empty' },
-                      act.error
-                        ? h('span', null,
-                            `读不到本地记录：${act.error} `,
-                            h('button', {
-                              className: 'ghp-btn',
-                              style: { marginLeft: 8, fontSize: 12, padding: '3px 8px' },
-                              onClick: () => {
-                                actStarted.current = false
-                                setAct({ loading: false, error: null, data: null })
-                                setActTick((n) => n + 1)
-                              },
-                            }, '重试'))
-                        : '统计中…')),
-                mode === 'dsh'
-                  ? h('div', { style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', marginTop: 6 } },
-                      '口径：本地会话的存活区间（创建到最近活动），每天算一次活跃。')
-                  : null)
+                          act.error
+                            ? h('span', null,
+                                t.loadFailedLocal + act.error + ' ',
+                                h('button', {
+                                  className: 'ghp-btn',
+                                  style: { marginLeft: 8, fontSize: 12, padding: '3px 8px' },
+                                  onClick: () => {
+                                    actStarted.current = false
+                                    setAct({ loading: false, error: null, data: null })
+                                    setActTick((n) => n + 1)
+                                  },
+                                }, t.retry))
+                            : t.counting)),
+                mode === 'dsh' ? h('div', { className: 'ghp-note' }, t.dshNote) : null)
             : null,
           login
             ? h('div', { className: 'ghp-card' },
-                h('h3', null, `仓库（${repos.length}）`),
+                h('h3', null, `${t.reposTitle} (${repos.length})`),
                 repos.length === 0
-                  ? h('div', { className: 'ghp-empty' }, '没有公开仓库')
+                  ? h('div', { className: 'ghp-empty' }, t.noRepos)
                   : h('div', { className: 'ghp-repos' }, repos.map((r) => h(RepoCard, { key: r.name, repo: r }))))
             : null,
         ),
       )
     }
+
+    /* ------------------------------------------------------------ 图标与注册 */
 
     function Icon({ size = 20, active = false }) {
       return h('svg', {

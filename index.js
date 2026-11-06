@@ -238,12 +238,13 @@ export function apply(ctx, config) {
       if (!login) {
         return sendJson(res, 400, {
           ok: false,
-          error: '还没有填写 GitHub 用户名',
+          error: 'No GitHub username yet',
+          errorZh: '还没有填写 GitHub 用户名',
           hint: '在页面顶部填写你的 GitHub 用户名（只读公开信息，不需要登录）。',
         })
       }
       if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(login)) {
-        return sendJson(res, 400, { ok: false, error: `用户名格式不对：${login}` })
+        return sendJson(res, 400, { ok: false, error: `Invalid username: ${login}`, errorZh: `用户名格式不对：${login}` })
       }
 
       const now = Date.now()
