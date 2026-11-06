@@ -203,25 +203,30 @@ window.__ModuleLoader__.load({
       // 模式：github = 远程贡献；dsh = 本地干活（蓝色）。切过去才拉本地数据。
       const [mode, setMode] = useState('github')
       const [act, setAct] = useState({ loading: false, error: null, data: null })
+      const [actTick, setActTick] = useState(0)
+      // 用 ref 做「只拉一次」的闸门：不能把 loading/data 放进依赖，
+      // 否则 setState → 依赖变化 → cleanup 把在飞的请求 abort 掉，形成死循环。
+      const actStarted = React.useRef(false)
       useEffect(() => {
-        if (mode !== 'dsh' || act.data || act.loading) return
+        if (mode !== 'dsh' || actStarted.current) return
+        actStarted.current = true
+        let timer = null
         setAct({ loading: true, error: null, data: null })
         const ctl = new AbortController()
-        const timer = setTimeout(() => ctl.abort(), 20000)
+        timer = setTimeout(() => ctl.abort(), 20000)
         fetch(ACT_API, { credentials: 'same-origin', signal: ctl.signal })
-          .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+          .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
           .then((j) => {
             if (!j || j.ok === false) throw new Error((j && j.error) || '取数失败')
-            clearTimeout(timer)
             setAct({ loading: false, error: null, data: j })
           })
           .catch((e) => {
-            clearTimeout(timer)
-            const msg = String(e && e.name === 'AbortError' ? '超时（20 秒）' : (e.message || e))
+            const msg = e && e.name === 'AbortError' ? '超时（20 秒）' : String((e && e.message) || e)
             setAct({ loading: false, error: msg, data: null })
           })
-        return () => { clearTimeout(timer); ctl.abort() }
-      }, [mode, act.data, act.loading])
+          .then(() => { if (timer) clearTimeout(timer) })
+        return () => { if (timer) clearTimeout(timer) }
+      }, [mode, actTick])
 
       const submit = () => {
         const user = draft.trim().replace(/^@/, '')
