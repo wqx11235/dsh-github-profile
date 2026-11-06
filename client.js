@@ -14,8 +14,20 @@ window.__ModuleLoader__.load({
 
     /* ------------------------------------------------------------ 文案 */
 
-    const LANG = (typeof navigator !== 'undefined' && String(navigator.language || '').toLowerCase().startsWith('zh'))
-      ? 'zh' : 'en'
+    const LANG_KEY = 'ghp.lang'
+    const THEME_KEY = 'ghp.theme'
+
+    function detectLang() {
+      try {
+        const saved = localStorage.getItem(LANG_KEY)
+        if (saved === 'zh' || saved === 'en') return saved
+      } catch { /* 忽略 */ }
+      return (typeof navigator !== 'undefined' && String(navigator.language || '').toLowerCase().startsWith('zh'))
+        ? 'zh' : 'en'
+    }
+
+    // 可变：手动开关直接改它，组件重渲染时读到新值
+    let LANG = detectLang()
 
     const STRINGS = {
       zh: {
@@ -55,6 +67,8 @@ window.__ModuleLoader__.load({
         updated: (d) => `更新 ${d}`,
         noDesc: '（无描述）',
         month: (m) => `${m}月`,
+        light: '浅',
+        dark: '深',
       },
       en: {
         title: 'GitHub profile',
@@ -92,11 +106,19 @@ window.__ModuleLoader__.load({
         noContribution: 'no contributions',
         updated: (d) => `updated ${d}`,
         noDesc: '(no description)',
+        light: 'Light',
+        dark: 'Dark',
         month: (m) => ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m - 1],
       },
     }
 
-    const t = STRINGS[LANG]
+    let t = STRINGS[LANG]
+
+    function setLang(next) {
+      LANG = next === 'en' ? 'en' : 'zh'
+      t = STRINGS[LANG]
+      try { localStorage.setItem(LANG_KEY, LANG) } catch { /* 忽略 */ }
+    }
 
     /* ------------------------------------------------------------ 配色（跟随宿主深浅色） */
 
@@ -140,11 +162,19 @@ window.__ModuleLoader__.load({
       try { return window.matchMedia('(prefers-color-scheme: dark)').matches } catch { return false }
     }
 
-    function useDarkTheme() {
-      const [dark, setDark] = useState(isDarkTheme)
+    function loadThemeOverride() {
+      try {
+        const saved = localStorage.getItem(THEME_KEY)
+        if (saved === 'light' || saved === 'dark') return saved
+      } catch { /* 忽略 */ }
+      return null
+    }
+
+    function useDarkTheme(override) {
+      const [auto, setAuto] = useState(isDarkTheme)
       useEffect(() => {
         let obs = null
-        const sync = () => setDark(isDarkTheme())
+        const sync = () => setAuto(isDarkTheme())
         try {
           obs = new MutationObserver(sync)
           obs.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme', 'style'] })
@@ -159,7 +189,9 @@ window.__ModuleLoader__.load({
           if (mq) { try { mq.removeEventListener('change', sync) } catch { /* 忽略 */ } }
         }
       }, [])
-      return dark
+      if (override === "dark") return true
+      if (override === "light") return false
+      return auto
     }
 
     /* ------------------------------------------------------------ 样式 */
@@ -180,7 +212,7 @@ window.__ModuleLoader__.load({
 .ghp-stats { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 12px; }
 .ghp-stat b { display: block; font-size: 17px; font-weight: 650; }
 .ghp-stat span { font-size: 12px; color: var(--dsw-alias-label-secondary); }
-.ghp-actions { display: flex; gap: 8px; align-items: center; }
+.ghp-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .ghp-input { font: inherit; font-size: 13px; padding: 6px 10px; border-radius: 8px; width: 190px;
   color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-2);
   border: 1px solid var(--dsw-alias-border-l1); outline: none; }
@@ -328,7 +360,18 @@ window.__ModuleLoader__.load({
     /* ------------------------------------------------------------ 页面 */
 
     function GithubPanel() {
-      const dark = useDarkTheme()
+      const [lang, setLangState] = useState(LANG)
+      const [themeOverride, setThemeOverride] = useState(loadThemeOverride)
+      const dark = useDarkTheme(themeOverride)
+      const pickLang = (next) => { setLang(next); setLangState(next) }
+      const pickTheme = (next) => {
+        const value = themeOverride === next ? null : next
+        setThemeOverride(value)
+        try {
+          if (value) localStorage.setItem(THEME_KEY, value)
+          else localStorage.removeItem(THEME_KEY)
+        } catch { /* 忽略 */ }
+      }
       const [login, setLogin] = useState(() => {
         try { return localStorage.getItem(LOGIN_KEY) || '' } catch { return '' }
       })
@@ -431,6 +474,14 @@ window.__ModuleLoader__.load({
               ) : null,
             ),
             h('div', { className: 'ghp-actions' },
+              h('div', { className: 'ghp-seg', title: 'Language' },
+                h('button', { 'data-on': lang === 'zh' ? '1' : '0', onClick: () => pickLang('zh') }, '中'),
+                h('button', { 'data-on': lang === 'en' ? '1' : '0', onClick: () => pickLang('en') }, 'EN'),
+              ),
+              h('div', { className: 'ghp-seg', title: 'Theme' },
+                h('button', { 'data-on': !dark ? '1' : '0', onClick: () => pickTheme('light') }, t.light),
+                h('button', { 'data-on': dark ? '1' : '0', onClick: () => pickTheme('dark') }, t.dark),
+              ),
               h('input', {
                 className: 'ghp-input',
                 placeholder: t.placeholder,
