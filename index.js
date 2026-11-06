@@ -39,13 +39,13 @@ function headers(token, accept = 'application/json') {
 }
 
 async function getJson(url, token) {
-  const r = await fetch(url, { headers: headers(token) })
+  const r = await fetch(url, { headers: headers(token), signal: AbortSignal.timeout(15000) })
   if (!r.ok) throw new Error(`${url} → HTTP ${r.status}`)
   return r.json()
 }
 
 async function getText(url, token) {
-  const r = await fetch(url, { headers: headers(token, 'text/html') })
+  const r = await fetch(url, { headers: headers(token, 'text/html'), signal: AbortSignal.timeout(15000) })
   if (!r.ok) throw new Error(`${url} → HTTP ${r.status}`)
   return r.text()
 }
@@ -105,11 +105,16 @@ function pickRepo(r) {
 }
 
 async function buildPayload(login, token) {
-  const [user, repos, html] = await Promise.all([
+  const [userR, reposR, htmlR] = await Promise.allSettled([
     getJson(`https://api.github.com/users/${encodeURIComponent(login)}`, token),
     getJson(`https://api.github.com/users/${encodeURIComponent(login)}/repos?per_page=100&sort=pushed`, token),
     getText(`https://github.com/users/${encodeURIComponent(login)}/contributions`, token),
   ])
+  if (userR.status === 'rejected') throw userR.reason          // 用户都取不到才算失败
+  const user = userR.value
+  const repos = reposR.status === 'fulfilled' ? reposR.value : []
+  const html = htmlR.status === 'fulfilled' ? htmlR.value : ''
+  const partial = htmlR.status !== 'fulfilled' || reposR.status !== 'fulfilled'
   return {
     ok: true,
     fetchedAt: new Date().toISOString(),
@@ -125,7 +130,8 @@ async function buildPayload(login, token) {
       createdAt: user.created_at || null,
     },
     repos: (Array.isArray(repos) ? repos : []).map(pickRepo),
-    calendar: parseCalendar(html),
+    calendar: html ? parseCalendar(html) : null,
+    partial,
   }
 }
 

@@ -340,13 +340,19 @@ window.__ModuleLoader__.load({
           return
         }
         setState((s) => ({ ...s, loading: true, error: null }))
-        fetch(`${API}?login=${encodeURIComponent(user)}`, { credentials: 'same-origin' })
+        const ctl = new AbortController()
+        const timer = setTimeout(() => ctl.abort(), 30000)
+        fetch(`${API}?login=${encodeURIComponent(user)}`, { credentials: 'same-origin', signal: ctl.signal })
           .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
           .then((data) => {
             if (!data || data.ok === false) throw new Error((data && (LANG === 'zh' ? data.errorZh : data.error)) || (data && data.error) || 'request failed')
             setState({ loading: false, error: null, data })
           })
-          .catch((err) => setState({ loading: false, error: String((err && err.message) || err), data: null }))
+          .catch((err) => {
+            const msg = err && err.name === 'AbortError' ? t.timeout30 : String((err && err.message) || err)
+            setState({ loading: false, error: msg, data: null })
+          })
+          .then(() => clearTimeout(timer))
       }, [])
 
       useEffect(() => { if (login) load(login) }, [login, load])
