@@ -293,7 +293,20 @@ window.__ModuleLoader__.load({
                   ? (data ? h(Heatmap, { calendar: data.calendar }) : h('div', { className: 'ghp-empty' }, '加载中…'))
                   : (act.data
                       ? h(Heatmap, { calendar: act.data.calendar })
-                      : h('div', { className: 'ghp-empty' }, act.error ? `读不到本地记录：${act.error}` : '统计中…')),
+                      : h('div', { className: 'ghp-empty' },
+                      act.error
+                        ? h('span', null,
+                            `读不到本地记录：${act.error} `,
+                            h('button', {
+                              className: 'ghp-btn',
+                              style: { marginLeft: 8, fontSize: 12, padding: '3px 8px' },
+                              onClick: () => {
+                                actStarted.current = false
+                                setAct({ loading: false, error: null, data: null })
+                                setActTick((n) => n + 1)
+                              },
+                            }, '重试'))
+                        : '统计中…')),
                 mode === 'dsh'
                   ? h('div', { style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', marginTop: 6 } },
                       '口径：本地会话的存活区间（创建到最近活动），每天算一次活跃。')
