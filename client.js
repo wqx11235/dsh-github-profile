@@ -42,12 +42,12 @@ window.__ModuleLoader__.load({
   color: var(--dsw-alias-label-secondary); text-transform: uppercase; }
 .ghp-heat { overflow-x: auto; padding-bottom: 4px; }
 .ghp-inner { display: inline-block; }
-.ghp-months { display: grid; gap: 3px; font-size: 11px; margin-bottom: 3px;
+.ghp-months { display: grid; gap: 4px; font-size: 12px; margin-bottom: 4px;
   color: var(--dsw-alias-label-secondary); }
 .ghp-month { white-space: nowrap; overflow: visible; }
 .ghp-grid { display: grid; grid-auto-flow: column; gap: 3px; }
-.ghp-col { display: grid; grid-template-rows: repeat(7, 11px); gap: 3px; }
-.ghp-cell { width: 11px; height: 11px; border-radius: 2.5px; background: #ebedf0;
+.ghp-col { display: grid; grid-template-rows: repeat(7, 13px); gap: 4px; }
+.ghp-cell { width: 13px; height: 13px; border-radius: 3px; background: #ebedf0;
   outline: 1px solid transparent; }
 .ghp-cell[data-l="1"] { background: #9be9a8; }
 .ghp-cell[data-l="2"] { background: #40c463; }
@@ -106,8 +106,8 @@ window.__ModuleLoader__.load({
       }
       const weeks = calendar.weeks
       const COLS = weeks.length
-      const colW = 11
-      const gap = 3
+      const colW = 13
+      const gap = 4
       const innerW = COLS * colW + (COLS - 1) * gap
 
       // 每个「换月」的那一周单独标一次，按列号定位：月份与格子共用同一套列宽，不会错位
