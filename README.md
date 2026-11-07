@@ -42,11 +42,23 @@ dsh plugin --profile <你的 profile> add /absolute/path/to/dsh-github-profile
 | --- | --- |
 | 用户资料 | `api.github.com/users/<login>` |
 | 仓库列表 | `api.github.com/users/<login>/repos?per_page=100&sort=pushed` |
-| 贡献日历 | `github.com/users/<login>/contributions`（解析 `data-date` / `data-level`） |
+| 贡献日历 | 依次降级：GraphQL（有 token 时）/ [jogruber 公开 API](https://github-contributions-api.jogruber.de/) / `github.com/users/<login>/contributions`（HTML） |
 
-- 宿主侧有 **10 分钟缓存**，避免反复打 GitHub。
+- 宿主侧有 **10 分钟缓存**，三块数据分开缓存，避免反复打 GitHub。
 - 热力图只有 GitHub 的色阶，**没有每日精确次数**；一年总数是从贡献页标题里读的。
 - 插件不上传任何数据，也不写 GitHub；`gh-token.txt` 只用于提高速率上限和读私有仓库。
+
+## 读取稳定性（v0.1.2）
+
+之前的版本只用 `github.com/users/<login>/contributions` 抓热力图。本机直连 github.com 主站时常 TCP 超时（`api.github.com` 却正常），所以会出现「资料和仓库都在、热力图空着、一年贡献显示 —」的时好时坏。
+
+现在：
+
+- **三路降级**：有 token 走 `api.github.com/graphql`（还顺带拿到每日精确次数），无 token 走 jogruber 公开 API，两者都挂才回 github.com 贡献页。**正常情况完全不碰 github.com 主站**。
+- **分块容错**：资料卡、仓库、热力图各自缓存、各自失败，一块挂了不会让整页空白。
+- **失败不丢数据**：24 小时内的上次结果会继续显示，顶部提示「部分数据没取到」并给一键重试。
+- **token 过期自愈**：401/403 时自动去掉 token 以匿名身份重试。
+- **快速超时**：每请求 8 秒，网络抖动重试一次，不再等满 15 秒。
 
 ## 配置
 

@@ -1,8 +1,8 @@
 {
   "name": "dsh-github-profile",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
-  "description": "GitHub 档案页：资料卡、仓库卡与贡献热力图，数据只读公开信息",
+  "description": "GitHub 档案页：资料卡、仓库卡与贡献热力图，数据只读公开信息，多源降级不怕主站抖动",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",

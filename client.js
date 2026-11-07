@@ -69,6 +69,10 @@ window.__ModuleLoader__.load({
         month: (m) => `${m}月`,
         light: '浅',
         dark: '深',
+        partial: '部分数据这次没取到，显示的是上次缓存',
+        calFailed: '贡献数据没取到：',
+        reposFailed: '仓库列表没取到，显示的是上次缓存',
+        contribCount: (n) => `${n} 次贡献`,
       },
       en: {
         title: 'GitHub profile',
@@ -109,6 +113,10 @@ window.__ModuleLoader__.load({
         light: 'Light',
         dark: 'Dark',
         month: (m) => ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m - 1],
+        partial: 'Some data failed to load; showing last cached copy',
+        calFailed: 'Contribution data failed: ',
+        reposFailed: 'Repository list failed to load; showing last cached copy',
+        contribCount: (n) => `${n} contributions`,
       },
     }
 
@@ -263,6 +271,8 @@ window.__ModuleLoader__.load({
 .ghp-empty, .ghp-err { font-size: 14px; color: var(--dsw-alias-label-secondary); padding: 24px 0; text-align: center; }
 .ghp-err { color: var(--dsw-alias-state-error-primary); }
 .ghp-note { font-size: 11px; color: var(--dsw-alias-label-secondary); margin-top: 6px; }
+.ghp-partial { font-size: 12px; padding: 8px 12px; border-radius: 8px; margin-top: 0;
+  background: var(--dsw-alias-bg-layer-2); border: 1px solid var(--dsw-alias-border-l1); }
 `
 
     function Styles() {
@@ -324,7 +334,9 @@ window.__ModuleLoader__.load({
                   key: day.date,
                   className: 'ghp-cell',
                   'data-l': String(day.level),
-                  title: `${day.date} · ${day.level > 0 ? t.hasContribution : t.noContribution}`,
+                  title: day.count != null
+                    ? `${day.date} · ${t.contribCount(day.count)}`
+                    : `${day.date} · ${day.level > 0 ? t.hasContribution : t.noContribution}`,
                 }))))),
           ),
         ),
@@ -395,7 +407,8 @@ window.__ModuleLoader__.load({
           })
           .catch((err) => {
             const msg = err && err.name === 'AbortError' ? t.timeout30 : String((err && err.message) || err)
-            setState({ loading: false, error: msg, data: null })
+            // 保留上一次拿到的数据：网络抖一下不该把画面清空
+            setState((s) => ({ ...s, loading: false, error: msg }))
           })
           .then(() => clearTimeout(timer))
       }, [])
@@ -434,6 +447,8 @@ window.__ModuleLoader__.load({
         const user = draft.trim().replace(/^@/, '')
         if (!user) return
         try { localStorage.setItem(LOGIN_KEY, user) } catch { /* 隐私模式忽略 */ }
+        // 换人时先清空上一个用户的画面，避免旧数据冒充新用户
+        if (user !== login) setState({ loading: false, error: null, data: null })
         setLogin(user)
         if (user === login) load(user)
       }
@@ -503,6 +518,17 @@ window.__ModuleLoader__.load({
                   t.getStartedToken))
             : null,
           error ? h('div', { className: 'ghp-err' }, t.loadFailed + error) : null,
+          data && data.partial
+            ? h('div', { className: 'ghp-note ghp-partial' },
+                h('span', null, data.stale && data.stale.length
+                  ? `${t.partial}（${data.stale.join(' / ')}）`
+                  : t.partial),
+                h('button', {
+                  className: 'ghp-btn',
+                  style: { marginLeft: 8, fontSize: 12, padding: '3px 8px' },
+                  onClick: () => load(login),
+                }, t.retry))
+            : null,
           login
             ? h('div', { className: 'ghp-card' },
                 h('div', { className: 'ghp-cardhead' },
@@ -513,7 +539,19 @@ window.__ModuleLoader__.load({
                   ),
                 ),
                 mode === 'github'
-                  ? (data ? h(Heatmap, { calendar: data.calendar }) : h('div', { className: 'ghp-empty' }, t.loading))
+                  ? (data
+                      ? (data.calendar
+                          ? h(Heatmap, { calendar: data.calendar })
+                          : h('div', { className: 'ghp-empty' },
+                              data.errors && data.errors.calendar
+                                ? `${t.calFailed}${data.errors.calendar} `
+                                : `${t.noData} `,
+                              h('button', {
+                                className: 'ghp-btn',
+                                style: { marginLeft: 8, fontSize: 12, padding: '3px 8px' },
+                                onClick: () => load(login),
+                              }, t.retry)))
+                      : h('div', { className: 'ghp-empty' }, t.loading))
                   : (act.data
                       ? h(Heatmap, { calendar: act.data.calendar })
                       : h('div', { className: 'ghp-empty' },
@@ -535,6 +573,9 @@ window.__ModuleLoader__.load({
           login
             ? h('div', { className: 'ghp-card' },
                 h('h3', null, `${t.reposTitle} (${repos.length})`),
+                data && data.errors && data.errors.repos
+                  ? h('div', { className: 'ghp-note' }, t.reposFailed)
+                  : null,
                 repos.length === 0
                   ? h('div', { className: 'ghp-empty' }, t.noRepos)
                   : h('div', { className: 'ghp-repos' }, repos.map((r) => h(RepoCard, { key: r.name, repo: r }))))

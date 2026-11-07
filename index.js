@@ -1,13 +1,16 @@
 /**
  * dsh-github-profile — 宿主半边：抓 GitHub 档案数据并开一个同源路由。
  *
- *   GET /gh-profile/data?login=<可选>  →  { ok, profile, repos, calendar, fetchedAt }
+ *   GET /gh-profile/data?login=<可选>  →  { ok, profile, repos, calendar, fetchedAt, partial, stale }
  *
- * 数据源（都不需要 token，公开信息即可）：
- *   - api.github.com/users/<login>                 用户资料
- *   - api.github.com/users/<login>/repos           仓库列表（按最近推送排序）
- *   - github.com/users/<login>/contributions       贡献日历（HTML，解析 data-date/data-level）
- * 若 ~/.dsh/gh-token.txt 存在则带上 Authorization，纯为抬高速率上限。
+ * 稳定性设计（v0.1.2，针对「读取不稳定」）：
+ *   - profile / repos / calendar 三块各自独立缓存、独立失败，一块挂不拖垮整页。
+ *   - 失败不丢旧数据：24 小时内的上次结果作为 stale 兜底，并在返回值里标出来。
+ *   - 贡献日历多源降级：GraphQL（有 token）/ jogruber 第三方 API（不碰 github.com 主站）
+ *     / github.com 贡献页 HTML（最后兜底）。本机 github.com 直连时常 TCP 超时，
+ *     原来只用 HTML 抓取，所以热力图时有时无。
+ *   - token 过期（401/403）时自动去掉 token 重试一次，不整页失败。
+ *   - 每个请求 8 秒超时 + 网络类错误重试一次。
  */
 import { readFile } from 'node:fs/promises'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
@@ -17,11 +20,26 @@ import { join } from 'node:path'
 
 export const inject = ['webServer']
 
-const UA = 'dsh-github-profile/0.1.0'
+const UA = 'dsh-github-profile/0.1.2'
 const TTL_MS = 10 * 60 * 1000
+const STALE_MS = 24 * 60 * 60 * 1000
 const DEFAULT_TOKEN_FILE = join(homedir(), '.dsh', 'gh-token.txt')
 
-let cache = { at: 0, login: '', data: null }
+// 每个 login 一段缓存：字段分开存，互不牵连
+const store = new Map()
+
+function slotOf(login) {
+  let s = store.get(login)
+  if (!s) {
+    s = {
+      profile: null, profileAt: 0,
+      repos: null, reposAt: 0,
+      calendar: null, calendarAt: 0, calendarSource: null,
+    }
+    store.set(login, s)
+  }
+  return s
+}
 
 async function readToken(file) {
   try {
@@ -32,61 +50,209 @@ async function readToken(file) {
   }
 }
 
+/* ---------------------------------------------------------------- HTTP */
+
 function headers(token, accept = 'application/json') {
   const h = { 'User-Agent': UA, Accept: accept }
   if (token) h.Authorization = `Bearer ${token}`
   return h
 }
 
-async function getJson(url, token) {
-  const r = await fetch(url, { headers: headers(token), signal: AbortSignal.timeout(15000) })
-  if (!r.ok) throw new Error(`${url} → HTTP ${r.status}`)
-  return r.json()
-}
-
-async function getText(url, token) {
-  const r = await fetch(url, { headers: headers(token, 'text/html'), signal: AbortSignal.timeout(15000) })
-  if (!r.ok) throw new Error(`${url} → HTTP ${r.status}`)
-  return r.text()
-}
-
-/** 从贡献日历 HTML 里解析出 date → level(0..4)，以及总数/连续天数 */
-function parseCalendar(html) {
-  const byDate = new Map()
-  for (const chunk of html.split('<td')) {
-    const d = /data-date="(\d{4}-\d{2}-\d{2})"/.exec(chunk)
-    const l = /data-level="(\d)"/.exec(chunk)
-    if (d && l) byDate.set(d[1], Number(l[1]))
+class HttpError extends Error {
+  constructor(url, status, body) {
+    super(`${url} → HTTP ${status}`)
+    this.name = 'HttpError'
+    this.status = status
+    this.body = body
   }
-  const totalMatch = /([\d,]+)\s+contributions?\s+in\s+the\s+last\s+year/i.exec(html)
+}
 
-  // 以今天为终点，往前排 53 周 × 7 天（周日起），缺失日按 0
-  const days = []
+async function request(url, { token, accept, timeout = 8000, method = 'GET', body } = {}) {
+  const h = headers(token, accept)
+  if (body) h['content-type'] = 'application/json'
+  const r = await fetch(url, { method, headers: h, body, signal: AbortSignal.timeout(timeout) })
+  const text = await r.text()
+  if (!r.ok) throw new HttpError(url, r.status, text.slice(0, 200))
+  return text
+}
+
+async function requestJson(url, opts) {
+  return JSON.parse(await request(url, opts))
+}
+
+const isAuthError = (e) => e instanceof HttpError && (e.status === 401 || e.status === 403)
+
+async function withRetry(fn, retries = 1) {
+  let last
+  for (let i = 0; i <= retries; i++) {
+    try {
+      return await fn()
+    } catch (e) {
+      last = e
+      // 4xx 是确定性的，重试没意义；网络抖动（超时 / ECONNRESET）才重试
+      if (e instanceof HttpError && e.status < 500) break
+      if (i < retries) await new Promise((r) => setTimeout(r, 300))
+    }
+  }
+  throw last
+}
+
+/** GitHub 开放 API：token 失效时自动匿名重试，别让一个过期 token 把整页读挂 */
+async function githubJson(url, token) {
+  try {
+    return await withRetry(() => requestJson(url, { token }))
+  } catch (e) {
+    if (token && isAuthError(e)) return await withRetry(() => requestJson(url, { token: null }))
+    throw e
+  }
+}
+
+/* ---------------------------------------------------------------- 贡献日历 */
+
+const LEVELS = {
+  NONE: 0,
+  FIRST_QUARTILE: 1,
+  SECOND_QUARTILE: 2,
+  THIRD_QUARTILE: 3,
+  FOURTH_QUARTILE: 4,
+}
+
+function dayKey(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+/** 53 周窗口：从 364 天前所在周的周日到今天 */
+function calendarDates() {
   const end = new Date()
   end.setHours(0, 0, 0, 0)
   const start = new Date(end)
   start.setDate(start.getDate() - 364)
-  start.setDate(start.getDate() - start.getDay()) // 回到那周的周日
-  for (const cur = new Date(start); cur <= end; cur.setDate(cur.getDate() + 1)) {
-    const key = `${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, '0')}-${String(cur.getDate()).padStart(2, '0')}`
-    days.push({ date: key, level: byDate.get(key) ?? 0 })
-  }
+  start.setDate(start.getDate() - start.getDay())
+  const dates = []
+  for (const cur = new Date(start); cur <= end; cur.setDate(cur.getDate() + 1)) dates.push(dayKey(cur))
+  return dates
+}
 
+/**
+ * 把「日期 → 级别/次数」拼成统一结构。
+ * 三种数据源都走这里，热力图列位与月份标签不会因为数据源不同而错位。
+ */
+function assemble(dates, byDate, total, source) {
+  const days = dates.map((date) => {
+    const hit = byDate.get(date)
+    const raw = hit == null ? 0 : typeof hit === 'number' ? hit : Number(hit.level) || 0
+    const level = raw > 4 ? 4 : raw < 0 ? 0 : raw
+    const count = hit && typeof hit === 'object' && hit.count != null ? hit.count : null
+    return { date, level, count }
+  })
   const weeks = []
   for (let i = 0; i < days.length; i += 7) weeks.push(days.slice(i, i + 7))
-
-  // 连续天数：从今天往回数 level > 0
+  // 连续天数：今天还没贡献就从昨天算起（与 GitHub 口径一致）
   let streak = 0
-  for (let i = days.length - 1; i >= 0; i--) {
+  let i = days.length - 1
+  if (i >= 0 && days[i].level === 0) i--
+  for (; i >= 0; i--) {
     if (days[i].level > 0) streak++
     else break
   }
+  return { total: total == null ? null : total, weeks, streak, days: days.length, source }
+}
 
+const GRAPHQL_QUERY = `query($login: String!) {
+  user(login: $login) {
+    contributionsCollection {
+      contributionCalendar {
+        totalContributions
+        weeks { contributionDays { date contributionCount contributionLevel } }
+      }
+    }
+  }
+}`
+
+/** 源 A：api.github.com GraphQL（需要 token；最稳，且带每日精确次数） */
+async function graphqlCalendar(login, token) {
+  const res = await withRetry(() => requestJson('https://api.github.com/graphql', {
+    token,
+    method: 'POST',
+    body: JSON.stringify({ query: GRAPHQL_QUERY, variables: { login } }),
+  }))
+  const cal = res && res.data && res.data.user && res.data.user.contributionsCollection
+    && res.data.user.contributionsCollection.contributionCalendar
+  if (!cal || !Array.isArray(cal.weeks)) throw new Error('graphql: 没有贡献日历')
+  const byDate = new Map()
+  for (const week of cal.weeks) {
+    for (const d of week.contributionDays || []) {
+      byDate.set(d.date, { level: LEVELS[d.contributionLevel] ?? 0, count: d.contributionCount ?? 0 })
+    }
+  }
+  return assemble(calendarDates(), byDate, cal.totalContributions, 'graphql')
+}
+
+/** 源 B：github-contributions-api.jogruber.de（免 key，不依赖 github.com 主站） */
+async function jogruberCalendar(login) {
+  const res = await withRetry(() => requestJson(
+    `https://github-contributions-api.jogruber.de/v4/${encodeURIComponent(login)}?y=last`,
+  ))
+  const list = res && res.contributions
+  if (!Array.isArray(list) || list.length === 0) throw new Error('jogruber: 没有贡献日历')
+  const byDate = new Map()
+  for (const d of list) {
+    if (!d || !d.date) continue
+    byDate.set(d.date, { level: Number(d.level) || 0, count: d.count ?? null })
+  }
+  const total = typeof res.total === 'number' ? res.total : res.total && res.total.lastYear
+  return assemble(calendarDates(), byDate, total, 'jogruber')
+}
+
+/** 源 C：github.com 贡献页 HTML（兜底；主站直连时常 TCP 超时） */
+async function htmlCalendar(login, token) {
+  const html = await withRetry(() => request(
+    `https://github.com/users/${encodeURIComponent(login)}/contributions`,
+    { token, accept: 'text/html' },
+  ))
+  const byDate = new Map()
+  for (const chunk of html.split('<td')) {
+    const d = /data-date="(\d{4}-\d{2}-\d{2})"/.exec(chunk)
+    const l = /data-level="(\d)"/.exec(chunk)
+    if (d && l) byDate.set(d[1], { level: Number(l[1]), count: null })
+  }
+  if (byDate.size === 0) throw new Error('github.com: 贡献页里没有日历格子')
+  const totalMatch = /([\d,]+)\s+contributions?\s+in\s+the\s+last\s+year/i.exec(html)
+  return assemble(calendarDates(), byDate, totalMatch ? Number(totalMatch[1].replace(/,/g, '')) : null, 'html')
+}
+
+/**
+ * 贡献日历降级链：
+ *   有 token → GraphQL 与 jogruber 竞速（谁先成功用谁）；
+ *   无 token → jogruber 优先；
+ *   两者都挂才走 github.com HTML（唯一会碰主站的路径）。
+ */
+async function fetchCalendar(login, token) {
+  const racers = []
+  if (token) racers.push(() => graphqlCalendar(login, token))
+  racers.push(() => jogruberCalendar(login))
+  try {
+    return await Promise.any(racers.map((fn) => fn()))
+  } catch { /* 全挂，走 HTML 兜底 */ }
+  return await htmlCalendar(login, token)
+}
+
+/* ---------------------------------------------------------------- 组装 */
+
+const userUrl = (login) => `https://api.github.com/users/${encodeURIComponent(login)}`
+const reposUrl = (login) => `https://api.github.com/users/${encodeURIComponent(login)}/repos?per_page=100&sort=pushed`
+
+function pickProfile(u) {
   return {
-    total: totalMatch ? Number(totalMatch[1].replace(/,/g, '')) : null,
-    weeks,
-    streak,
-    days: days.length,
+    login: u.login,
+    name: u.name || u.login,
+    bio: u.bio || '',
+    avatar: u.avatar_url,
+    htmlUrl: u.html_url,
+    followers: u.followers ?? 0,
+    following: u.following ?? 0,
+    publicRepos: u.public_repos ?? 0,
+    createdAt: u.created_at || null,
   }
 }
 
@@ -104,37 +270,74 @@ function pickRepo(r) {
   }
 }
 
-async function buildPayload(login, token) {
-  const [userR, reposR, htmlR] = await Promise.allSettled([
-    getJson(`https://api.github.com/users/${encodeURIComponent(login)}`, token),
-    getJson(`https://api.github.com/users/${encodeURIComponent(login)}/repos?per_page=100&sort=pushed`, token),
-    getText(`https://github.com/users/${encodeURIComponent(login)}/contributions`, token),
-  ])
-  if (userR.status === 'rejected') throw userR.reason          // 用户都取不到才算失败
-  const user = userR.value
-  const repos = reposR.status === 'fulfilled' ? reposR.value : []
-  const html = htmlR.status === 'fulfilled' ? htmlR.value : ''
-  const partial = htmlR.status !== 'fulfilled' || reposR.status !== 'fulfilled'
+function errText(e) {
+  return String((e && e.message) || e)
+}
+
+function payloadOf(s, { stale = [], errors = {}, cached = false } = {}) {
   return {
     ok: true,
     fetchedAt: new Date().toISOString(),
-    profile: {
-      login: user.login,
-      name: user.name || user.login,
-      bio: user.bio || '',
-      avatar: user.avatar_url,
-      htmlUrl: user.html_url,
-      followers: user.followers ?? 0,
-      following: user.following ?? 0,
-      publicRepos: user.public_repos ?? 0,
-      createdAt: user.created_at || null,
-    },
-    repos: (Array.isArray(repos) ? repos : []).map(pickRepo),
-    calendar: html ? parseCalendar(html) : null,
-    partial,
+    cached,
+    profile: pickProfile(s.profile),
+    repos: (s.repos || []).map(pickRepo),
+    calendar: s.calendar,
+    calendarSource: s.calendarSource,
+    partial: stale.length > 0 || Object.keys(errors).length > 0,
+    stale,
+    errors,
   }
 }
 
+export async function buildPayload(login, token) {
+  const s = slotOf(login)
+  const now = Date.now()
+
+  // 三块都在 TTL 内：直接回缓存，连请求都不发
+  if (s.profile && s.repos && s.calendar
+    && now - s.profileAt < TTL_MS && now - s.reposAt < TTL_MS && now - s.calendarAt < TTL_MS) {
+    return payloadOf(s, { cached: true })
+  }
+
+  const [userR, reposR, calR] = await Promise.allSettled([
+    githubJson(userUrl(login), token),
+    githubJson(reposUrl(login), token),
+    fetchCalendar(login, token),
+  ])
+
+  const stale = []
+  const errors = {}
+
+  // 资料卡是必需项；失败时用 24 小时内的缓存兜底
+  if (userR.status === 'fulfilled') {
+    s.profile = userR.value
+    s.profileAt = now
+  } else if (s.profile && now - s.profileAt < STALE_MS) {
+    stale.push('profile')
+    errors.profile = errText(userR.reason)
+  } else {
+    throw userR.reason
+  }
+
+  if (reposR.status === 'fulfilled') {
+    s.repos = Array.isArray(reposR.value) ? reposR.value : []
+    s.reposAt = now
+  } else {
+    errors.repos = errText(reposR.reason)
+    if (s.repos && now - s.reposAt < STALE_MS) stale.push('repos')
+  }
+
+  if (calR.status === 'fulfilled' && calR.value) {
+    s.calendar = calR.value
+    s.calendarAt = now
+    s.calendarSource = calR.value.source || null
+  } else {
+    errors.calendar = errText(calR.reason)
+    if (s.calendar && now - s.calendarAt < STALE_MS) stale.push('calendar')
+  }
+
+  return payloadOf(s, { stale, errors })
+}
 
 /* ---------------------------------------------------- 本地活动（DSH 上干活） */
 
@@ -158,7 +361,6 @@ export async function buildActivity() {
   }
   walk(root, 0)
 
-  const dayKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
   const counts = new Map()
 
   for (const file of files) {
@@ -215,6 +417,7 @@ export async function buildActivity() {
   }
   return { total, streak, weeks, days: days.length, sessions: files.length }
 }
+
 function sendJson(res, code, body) {
   const buf = Buffer.from(JSON.stringify(body), 'utf8')
   res.writeHead(code, {
@@ -253,18 +456,17 @@ export function apply(ctx, config) {
         return sendJson(res, 400, { ok: false, error: `Invalid username: ${login}`, errorZh: `用户名格式不对：${login}` })
       }
 
-      const now = Date.now()
-      if (cache.data && cache.login === login && now - cache.at < TTL_MS) {
-        return sendJson(res, 200, { ...cache.data, cached: true })
-      }
-
       try {
         const token = await readToken(tokenFile)
         const payload = await buildPayload(login, token)
-        cache = { at: Date.now(), login, data: payload }
         sendJson(res, 200, payload)
       } catch (err) {
-        sendJson(res, 502, { ok: false, login, error: String(err && err.message ? err.message : err) })
+        sendJson(res, 502, {
+          ok: false,
+          login,
+          error: errText(err),
+          errorZh: `读 GitHub 数据失败：${errText(err)}`,
+        })
       }
     },
   }), 'dsh-github-profile: /gh-profile/data')
@@ -282,10 +484,10 @@ export function apply(ctx, config) {
       try {
         const calendar = await buildActivity()
         const payload = { ok: true, fetchedAt: new Date().toISOString(), calendar }
-        actCache = { at: Date.now(), data: payload }
+        actCache = { at: now, data: payload }
         sendJson(res, 200, payload)
       } catch (err) {
-        sendJson(res, 500, { ok: false, error: String(err && err.message ? err.message : err) })
+        sendJson(res, 500, { ok: false, error: errText(err) })
       }
     },
   }), 'dsh-github-profile: /gh-profile/activity')
