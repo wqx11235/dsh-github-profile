@@ -1,6 +1,6 @@
 {
   "name": "dsh-github-profile",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "description": "GitHub 档案页：资料卡、仓库卡与贡献热力图，数据只读公开信息，多源降级不怕主站抖动",
   "exports": {
@@ -17,12 +17,7 @@
     "client": {
       "platform": "web",
       "immediately": true,
-      "inject": [
-        "@deepseek-ai/dsh-client-runtime",
-        "@deepseek-ai/dsh-client-ui-slots",
-        "@deepseek-ai/dsh-client-ui-layout",
-        "@deepseek-ai/dsh-client-locale"
-      ]
+      "inject": []
     }
   }
 }

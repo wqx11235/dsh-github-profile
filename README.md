@@ -76,6 +76,15 @@ tokenFile: ~/.dsh/gh-token.txt   # 可选 token 文件（默认就是它）
 - 颜色跟随宿主主题：容器和文字用 `--dsw-*` token；热力图用 GitHub 自己的绿色阶。
 - 无构建步骤，纯 JS，改完刷新页面即可。
 
+## 适配 DSH 0.2.x（v0.1.3）
+
+针对 `@deepseek-ai/dsh-desktop 0.2.2-rc.1`（内核 0.2.2-rc.1，hostProtocolVersion 4）逐项核对过：
+
+- 宿主侧 `inject: ['webServer']`、`ctx.effect`、`webServer.register({ kind: 'exact', path, handler })` 契约不变，`/gh-profile/data` 正常返回。
+- 客户端 `window.__ModuleLoader__.load({ id, factory })`、`ctx.slots.inject/register`、`sidebar.panellist`（list）、`main`（keyed）、`pluginNavigation` 均保留，`register` 签名与 `label`/`order`/`locale` 选项一致。
+- 主题 token `--dsw-alias-*` 未改名，配色继续生效。
+- **清理旧包名**：`dsh.client.inject` 里原来声明的 `@deepseek-ai/dsh-client-runtime` 在 0.2.2 已不存在（0.1.x 遗留），`dsh-client-ui-slots` 也改为由 shell 提供。本插件只 `require('react')`（seed 模块），因此 `inject` 收敛为 `[]`。
+
 ## 许可
 
 MIT，见 [LICENSE](LICENSE)。

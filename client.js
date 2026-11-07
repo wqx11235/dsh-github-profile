@@ -597,10 +597,11 @@ window.__ModuleLoader__.load({
       h('path', { d: 'M9.5 8.5h5M9.5 11.5h3' }))
     }
 
-    const inject = ['slots', 'layout', 'pluginNavigation']
+    // 0.2.x：slots / layout 仍是必选服务；pluginNavigation 是可选的，本插件没用到，不再强依赖
+    const inject = ['slots', 'layout']
 
     function apply(ctx) {
-      ctx.inject(['layout', 'pluginNavigation'], (pageCtx) => {
+      ctx.inject(['layout'], (pageCtx) => {
         pageCtx.slots.inject('main', () => {
           const unregister = pageCtx.slots.register(
             { name: 'main', key: PANEL_ID, inject: () => ({}) },
