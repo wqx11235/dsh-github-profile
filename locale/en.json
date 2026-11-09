@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "GitHub Profile",
-    "description": "Read-only GitHub profile page: repo cards, language and stars, plus a one-year contribution heatmap."
+    "title": "GitHub profile",
+    "description": "Read-only GitHub profile page: profile card, repo cards (language and stars), one-year contribution heatmap, plus a DeepSeek platform usage tab (balance, spend, requests, tokens)."
   }
 }
