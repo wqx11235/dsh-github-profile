@@ -307,7 +307,7 @@ window.__ModuleLoader__.load({
 .ghp-bar-wrap { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: flex-end;
   align-items: center; height: 100%; }
 .ghp-bar { width: 100%; max-width: 22px; border-radius: 3px 3px 0 0;
-  background: var(--dsw-alias-brand-primary); opacity: .85; }
+  background: #e48d42; opacity: .92; }
 .ghp-bar-wrap:hover .ghp-bar { opacity: 1; }
 .ghp-bar-zero { width: 100%; max-width: 22px; height: 2px; border-radius: 1px;
   background: var(--dsw-alias-border-l2); }
