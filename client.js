@@ -10,6 +10,7 @@ window.__ModuleLoader__.load({
     const PANEL_ID = 'github-profile'
     const API = '/gh-profile/data'
     const ACT_API = '/gh-profile/activity'
+    const USAGE_API = '/gh-profile/usage'
     const LOGIN_KEY = 'ghp.login'
 
     /* ------------------------------------------------------------ 文案 */
@@ -73,6 +74,20 @@ window.__ModuleLoader__.load({
         calFailed: '贡献数据没取到：',
         reposFailed: '仓库列表没取到，显示的是上次缓存',
         contribCount: (n) => `${n} 次贡献`,
+        usageTab: '用量',
+        usageTitle: 'DeepSeek 用量',
+        usageBalance: '充值余额',
+        usageTotalCost: '累计消费金额',
+        usageSpent: '消费金额',
+        usageRequests: 'API 请求次数',
+        usageTokens: 'Tokens',
+        usageDays: '近 30 天',
+        usageByKey: '按 API Key',
+        usageLoading: '读取中…',
+        usageFailed: '读不到用量：',
+        usageNoToken: '还没有平台登录凭证',
+        usageNoTokenBody: '打开 platform.deepseek.com 登录 → F12 → Network → 任意接口请求 → 复制 Authorization 里的 Bearer token → 存到 ~/.dsh/deepseek-platform-token.txt（一行）。',
+        usageNote: '数据来自 DeepSeek 平台，可能有 5 分钟延迟',
       },
       en: {
         title: 'GitHub profile',
@@ -117,6 +132,20 @@ window.__ModuleLoader__.load({
         calFailed: 'Contribution data failed: ',
         reposFailed: 'Repository list failed to load; showing last cached copy',
         contribCount: (n) => `${n} contributions`,
+        usageTab: 'Usage',
+        usageTitle: 'DeepSeek usage',
+        usageBalance: 'Balance',
+        usageTotalCost: 'Total spent',
+        usageSpent: 'Spent',
+        usageRequests: 'API requests',
+        usageTokens: 'Tokens',
+        usageDays: 'last 30 days',
+        usageByKey: 'By API key',
+        usageLoading: 'Loading…',
+        usageFailed: 'Could not load usage: ',
+        usageNoToken: 'No platform token configured',
+        usageNoTokenBody: 'Log in at platform.deepseek.com → DevTools → Network → any request → copy the Bearer token from Authorization → save it to ~/.dsh/deepseek-platform-token.txt (one line).',
+        usageNote: 'Data from the DeepSeek platform; may lag ~5 minutes.',
       },
     }
 
@@ -273,6 +302,22 @@ window.__ModuleLoader__.load({
 .ghp-note { font-size: 11px; color: var(--dsw-alias-label-secondary); margin-top: 6px; }
 .ghp-partial { font-size: 12px; padding: 8px 12px; border-radius: 8px; margin-top: 0;
   background: var(--dsw-alias-bg-layer-2); border: 1px solid var(--dsw-alias-border-l1); }
+.ghp-usagestats { display: flex; flex-wrap: wrap; gap: 22px; margin-bottom: 16px; }
+.ghp-chart { display: flex; align-items: flex-end; gap: 3px; height: 150px; padding-top: 6px; }
+.ghp-bar-wrap { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: flex-end;
+  align-items: center; height: 100%; }
+.ghp-bar { width: 100%; max-width: 22px; border-radius: 3px 3px 0 0;
+  background: var(--dsw-alias-brand-primary); opacity: .85; }
+.ghp-bar-wrap:hover .ghp-bar { opacity: 1; }
+.ghp-bar-zero { width: 100%; max-width: 22px; height: 2px; border-radius: 1px;
+  background: var(--dsw-alias-border-l2); }
+.ghp-chartaxis { display: flex; justify-content: space-between; margin-top: 6px;
+  font-size: 11px; color: var(--dsw-alias-label-secondary); }
+.ghp-keys { margin-top: 14px; }
+.ghp-krow { display: grid; grid-template-columns: 1fr 90px 100px 110px; gap: 8px; padding: 8px 2px;
+  border-top: 1px solid var(--dsw-alias-border-l1); font-size: 13px; align-items: center; }
+.ghp-krow.ghp-khead { border-top: 0; font-size: 11px; color: var(--dsw-alias-label-secondary); }
+.ghp-krow > div:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
 `
 
     function Styles() {
@@ -350,6 +395,81 @@ window.__ModuleLoader__.load({
           ),
         ),
       )
+    }
+
+    /* ------------------------------------------------------------ 平台用量 */
+
+    function fmtInt(n) {
+      return Number(n || 0).toLocaleString('zh-CN')
+    }
+
+    function fmtMoney(n) {
+      return '¥' + Number(n || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    }
+
+    function fmtTokens(n) {
+      const v = Number(n || 0)
+      if (v >= 1e8) return (v / 1e8).toFixed(2) + ' 亿'
+      if (v >= 1e4) return (v / 1e4).toFixed(1) + ' 万'
+      return fmtInt(v)
+    }
+
+    function UsageChart({ series }) {
+      if (!series || series.length === 0) return h('div', { className: 'ghp-empty' }, t.noData)
+      const max = Math.max(1, ...series.map((d) => d.cost))
+      return h('div', null,
+        h('div', { className: 'ghp-chart' },
+          series.map((d) => {
+            const pct = Math.max(0, Math.min(100, (d.cost / max) * 100))
+            return h('div', {
+              key: d.date,
+              className: 'ghp-bar-wrap',
+              title: `${d.date} · ${t.usageSpent} ${fmtMoney(d.cost)} · ${t.usageRequests} ${fmtInt(d.requests)} · ${t.usageTokens} ${fmtInt(d.tokens)}`,
+            },
+              d.cost <= 0
+                ? h('div', { className: 'ghp-bar-zero' })
+                : h('div', { className: 'ghp-bar', style: { height: pct + '%' } }))
+          })),
+        h('div', { className: 'ghp-chartaxis' },
+          h('span', null, series[0].date.slice(5)),
+          h('span', null, series[series.length - 1].date.slice(5))))
+    }
+
+    function UsageView({ usage, retry }) {
+      const { loading, error, data } = usage
+      if (!data) {
+        if (error) {
+          return h('div', { className: 'ghp-empty' },
+            t.usageFailed + error + ' ',
+            h('button', {
+              className: 'ghp-btn',
+              style: { marginLeft: 8, fontSize: 12, padding: '3px 8px' },
+              onClick: retry,
+            }, t.retry))
+        }
+        return h('div', { className: 'ghp-empty' }, t.usageLoading)
+      }
+      return h('div', null,
+        h('div', { className: 'ghp-usagestats' },
+          h(Stat, { value: fmtMoney(data.balance), label: t.usageBalance }),
+          h(Stat, { value: fmtMoney(data.totalCost), label: t.usageTotalCost }),
+          h(Stat, { value: fmtMoney(data.totals && data.totals.cost), label: `${t.usageSpent} · ${t.usageDays}` }),
+          h(Stat, { value: fmtInt(data.totals && data.totals.requests), label: t.usageRequests }),
+          h(Stat, { value: fmtTokens(data.totals && data.totals.tokens), label: t.usageTokens })),
+        h(UsageChart, { series: data.series }),
+        data.keys && data.keys.length
+          ? h('div', { className: 'ghp-keys' },
+              h('div', { className: 'ghp-krow ghp-khead' },
+                h('div', null, t.usageByKey),
+                h('div', null, t.usageSpent),
+                h('div', null, t.usageRequests),
+                h('div', null, t.usageTokens)),
+              data.keys.map((k) => h('div', { className: 'ghp-krow', key: k.id },
+                h('div', null, k.name || k.id),
+                h('div', null, fmtMoney(k.cost)),
+                h('div', null, fmtInt(k.requests)),
+                h('div', null, fmtTokens(k.tokens)))))
+          : null)
     }
 
     function RepoCard({ repo }) {
@@ -443,6 +563,39 @@ window.__ModuleLoader__.load({
         return () => { if (timer) clearTimeout(timer) }
       }, [mode, actTick])
 
+      // 用量视图：切过去才拉平台数据（DeepSeek 平台网页登录态接口）
+      const [usage, setUsage] = useState({ loading: false, error: null, data: null })
+      const [usageTick, setUsageTick] = useState(0)
+      const usageStarted = React.useRef(false)
+      useEffect(() => {
+        if (mode !== 'usage' || usageStarted.current) return
+        usageStarted.current = true
+        let timer = null
+        setUsage({ loading: true, error: null, data: null })
+        const ctl = new AbortController()
+        timer = setTimeout(() => ctl.abort(), 30000)
+        fetch(`${USAGE_API}?days=30`, { credentials: 'same-origin', signal: ctl.signal })
+          .then((r) => (r.ok ? r.json() : r.json().then((j) => Promise.reject(new Error(
+            (j && (LANG === 'zh' ? j.errorZh : j.error)) || (j && j.error) || ('HTTP ' + r.status))))))
+          .then((j) => {
+            if (!j || j.ok === false) throw new Error((j && (LANG === 'zh' ? j.errorZh : j.error)) || (j && j.error) || 'request failed')
+            setUsage({ loading: false, error: null, data: j })
+          })
+          .catch((e) => setUsage({
+            loading: false,
+            error: e && e.name === 'AbortError' ? t.timeout30 : String((e && e.message) || e),
+            data: null,
+          }))
+          .then(() => { if (timer) clearTimeout(timer) })
+        return () => { if (timer) clearTimeout(timer) }
+      }, [mode, usageTick])
+
+      const retryUsage = () => {
+        usageStarted.current = false
+        setUsage({ loading: false, error: null, data: null })
+        setUsageTick((n) => n + 1)
+      }
+
       const submit = () => {
         const user = draft.trim().replace(/^@/, '')
         if (!user) return
@@ -532,13 +685,16 @@ window.__ModuleLoader__.load({
           login
             ? h('div', { className: 'ghp-card' },
                 h('div', { className: 'ghp-cardhead' },
-                  h('h3', null, mode === 'dsh' ? t.heatmapDsh : t.heatmap),
+                  h('h3', null, mode === 'usage' ? t.usageTitle : (mode === 'dsh' ? t.heatmapDsh : t.heatmap)),
                   h('div', { className: 'ghp-seg' },
                     h('button', { 'data-on': mode === 'github' ? '1' : '0', onClick: () => setMode('github') }, 'GitHub'),
                     h('button', { 'data-on': mode === 'dsh' ? '1' : '0', onClick: () => setMode('dsh') }, 'DSH'),
+                    h('button', { 'data-on': mode === 'usage' ? '1' : '0', onClick: () => setMode('usage') }, t.usageTab),
                   ),
                 ),
-                mode === 'github'
+                mode === 'usage'
+                  ? h(UsageView, { usage, retry: retryUsage })
+                  : mode === 'github'
                   ? (data
                       ? (data.calendar
                           ? h(Heatmap, { calendar: data.calendar })
@@ -568,7 +724,8 @@ window.__ModuleLoader__.load({
                                   },
                                 }, t.retry))
                             : t.counting)),
-                mode === 'dsh' ? h('div', { className: 'ghp-note' }, t.dshNote) : null)
+                mode === 'usage' ? h('div', { className: 'ghp-note' }, t.usageNote)
+                  : mode === 'dsh' ? h('div', { className: 'ghp-note' }, t.dshNote) : null)
             : null,
           login
             ? h('div', { className: 'ghp-card' },

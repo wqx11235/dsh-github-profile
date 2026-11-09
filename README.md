@@ -85,6 +85,24 @@ tokenFile: ~/.dsh/gh-token.txt   # 可选 token 文件（默认就是它）
 - 主题 token `--dsw-alias-*` 未改名，配色继续生效。
 - **清理旧包名**：`dsh.client.inject` 里原来声明的 `@deepseek-ai/dsh-client-runtime` 在 0.2.2 已不存在（0.1.x 遗留），`dsh-client-ui-slots` 也改为由 shell 提供。本插件只 `require('react')`（seed 模块），因此 `inject` 收敛为 `[]`。
 
+## DeepSeek 用量（v0.1.4）
+
+页面中间的 **GitHub / DSH / 用量** 三段切换里，第三段是 DeepSeek 平台账户用量：
+
+- 充值余额、累计消费金额
+- 近 30 天消费金额、API 请求次数、Tokens
+- 每日消费柱状图（悬停看当天明细）
+- 按 API Key 分组的用量明细
+
+数据来自 `platform.deepseek.com` 的网页登录态接口，需要平台 token（不是 API Key）：
+
+1. 浏览器登录 https://platform.deepseek.com
+2. F12 → Network → 任意 `/api/v0/...` 请求
+3. 复制 `Authorization` 里 `Bearer ` 后面那串
+4. 存成一行到 `~/.dsh/deepseek-platform-token.txt`（或插件目录 `platform-token.txt`）
+
+token 过期时页面会提示，重新获取覆盖即可。数据有 3 分钟缓存。
+
 ## 许可
 
 MIT，见 [LICENSE](LICENSE)。

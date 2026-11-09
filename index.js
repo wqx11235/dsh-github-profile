@@ -2,6 +2,8 @@
  * dsh-github-profile — 宿主半边：抓 GitHub 档案数据并开一个同源路由。
  *
  *   GET /gh-profile/data?login=<可选>  →  { ok, profile, repos, calendar, fetchedAt, partial, stale }
+ *   GET /gh-profile/activity          →  { ok, calendar }（DSH 本地工作热力图）
+ *   GET /gh-profile/usage?days=N      →  { ok, balance, totalCost, totals, series, keys }（DeepSeek 平台用量）
  *
  * 稳定性设计（v0.1.2，针对「读取不稳定」）：
  *   - profile / repos / calendar 三块各自独立缓存、独立失败，一块挂不拖垮整页。
@@ -16,14 +18,22 @@ import { readFile } from 'node:fs/promises'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { zstdDecompressSync } from 'node:zlib'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 export const inject = ['webServer']
 
-const UA = 'dsh-github-profile/0.1.2'
+const UA = 'dsh-github-profile/0.1.4'
 const TTL_MS = 10 * 60 * 1000
 const STALE_MS = 24 * 60 * 60 * 1000
 const DEFAULT_TOKEN_FILE = join(homedir(), '.dsh', 'gh-token.txt')
+
+/* DeepSeek 平台用量（数据来自 platform.deepseek.com 网页登录态接口） */
+const PLATFORM = 'https://platform.deepseek.com'
+const USAGE_TOKEN_FILE = join(homedir(), '.dsh', 'deepseek-platform-token.txt')
+const USAGE_LOCAL_TOKEN_FILE = join(dirname(fileURLToPath(import.meta.url)), 'platform-token.txt')
+const USAGE_TTL_MS = 3 * 60 * 1000
+let usageCache = { at: 0, days: 0, data: null }
 
 // 每个 login 一段缓存：字段分开存，互不牵连
 const store = new Map()
@@ -339,6 +349,126 @@ export async function buildPayload(login, token) {
   return payloadOf(s, { stale, errors })
 }
 
+/* ---------------------------------------------------- DeepSeek 平台用量 */
+
+async function readUsageToken() {
+  for (const file of [USAGE_TOKEN_FILE, USAGE_LOCAL_TOKEN_FILE]) {
+    try {
+      const t = (await readFile(file, 'utf8')).trim()
+      if (t) return t
+    } catch { /* 试下一个 */ }
+  }
+  return null
+}
+
+class PlatformError extends Error {
+  constructor(code, msg) {
+    super(msg || `平台接口错误 ${code}`)
+    this.name = 'PlatformError'
+    this.code = code
+  }
+}
+
+/** 平台接口统一外层：{ code, msg, data: { biz_code, biz_data } } */
+async function platformGet(path, token, timeout = 12000) {
+  const r = await fetch(PLATFORM + path, {
+    headers: { 'User-Agent': UA, Accept: 'application/json', Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(timeout),
+  })
+  if (!r.ok) throw new Error(`${path} → HTTP ${r.status}`)
+  const j = await r.json()
+  if (j.code !== 0) throw new PlatformError(j.code, j.msg)
+  const inner = j.data || {}
+  if (inner.biz_code !== 0) throw new PlatformError(inner.biz_code, inner.biz_msg)
+  return inner.biz_data
+}
+
+function usageDayKey(ts) {
+  const d = new Date((ts + 8 * 3600) * 1000) // 平台固定 GMT+8
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`
+}
+
+function summarizeUsage(amount, cost) {
+  const byDay = new Map()
+  const byKey = new Map()
+  const models = new Set()
+
+  const day = (ts) => {
+    const k = usageDayKey(ts)
+    let row = byDay.get(k)
+    if (!row) { row = { date: k, cost: 0, requests: 0, tokens: 0 }; byDay.set(k, row) }
+    return row
+  }
+  const keyRow = (apiKey) => {
+    const id = (apiKey && (apiKey.tracking_id || apiKey.name)) || 'unknown'
+    let row = byKey.get(id)
+    if (!row) {
+      row = { id, name: (apiKey && apiKey.name) || id, cost: 0, requests: 0, tokens: 0 }
+      byKey.set(id, row)
+    }
+    return row
+  }
+
+  for (const series of (amount.series || [])) {
+    for (const bucket of series.buckets || []) {
+      const u = bucket.usage || {}
+      const tokens = (u.RESPONSE_TOKEN || 0) + (u.PROMPT_CACHE_HIT_TOKEN || 0) + (u.PROMPT_CACHE_MISS_TOKEN || 0)
+      const requests = u.REQUEST || 0
+      const row = day(bucket.time)
+      row.requests += requests
+      row.tokens += tokens
+      const k = keyRow(series.api_key)
+      k.requests += requests
+      k.tokens += tokens
+      if (series.model) models.add(series.model)
+    }
+  }
+  for (const group of (cost.data || [])) {
+    for (const series of (group.series || [])) {
+      for (const bucket of series.buckets || []) {
+        const c = Number(bucket.cost) || 0
+        day(bucket.time).cost += c
+        keyRow(series.api_key).cost += c
+        if (series.model) models.add(series.model)
+      }
+    }
+  }
+
+  const series = [...byDay.values()].sort((a, b) => a.date.localeCompare(b.date))
+  return {
+    series,
+    totals: {
+      cost: series.reduce((a, d) => a + d.cost, 0),
+      requests: series.reduce((a, d) => a + d.requests, 0),
+      tokens: series.reduce((a, d) => a + d.tokens, 0),
+    },
+    keys: [...byKey.values()].sort((a, b) => b.cost - a.cost),
+    models: [...models],
+  }
+}
+
+export async function buildUsage(days, token) {
+  const end = Math.floor(new Date(new Date().setHours(0, 0, 0, 0)).getTime() / 1000)
+  const start = end - Math.max(1, Math.min(365, days)) * 86400
+  const [summary, amount, cost] = await Promise.all([
+    platformGet('/api/v0/users/get_user_summary', token),
+    platformGet(`/api/v0/usage/by_api_key/amount?start=${start}&end=${end}&tz=28800`, token),
+    platformGet(`/api/v0/usage/by_api_key/cost?start=${start}&end=${end}&tz=28800`, token),
+  ])
+  const agg = summarizeUsage(amount, cost)
+  const wallet = (summary.normal_wallets || []).find((w) => w.currency === 'CNY') || (summary.normal_wallets || [])[0] || {}
+  const total = (summary.total_costs || []).find((c) => c.currency === 'CNY') || (summary.total_costs || [])[0] || {}
+  return {
+    ok: true,
+    fetchedAt: new Date().toISOString(),
+    days: Number(days),
+    balance: Number(wallet.balance) || 0,
+    totalCost: Number(total.amount) || 0,
+    currency: wallet.currency || 'CNY',
+    ...agg,
+  }
+}
+
 /* ---------------------------------------------------- 本地活动（DSH 上干活） */
 
 /**
@@ -491,4 +621,47 @@ export function apply(ctx, config) {
       }
     },
   }), 'dsh-github-profile: /gh-profile/activity')
+
+  // DeepSeek 平台用量：余额 + 近 N 天消费/请求/tokens（网页登录态接口）
+  ctx.effect(() => webServer.register({
+    kind: 'exact',
+    path: '/gh-profile/usage',
+    handler: async (req, res) => {
+      let days = 30
+      try {
+        const u = new URL(req.url, 'http://127.0.0.1')
+        days = Number(u.searchParams.get('days')) || 30
+      } catch { /* 默认 30 天 */ }
+
+      const now = Date.now()
+      if (usageCache.data && usageCache.days === days && now - usageCache.at < USAGE_TTL_MS) {
+        return sendJson(res, 200, { ...usageCache.data, cached: true })
+      }
+
+      const token = await readUsageToken()
+      if (!token) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: 'No platform token',
+          errorZh: '还没有平台登录凭证',
+          hint: '打开 platform.deepseek.com 登录后，把请求头里的 Authorization token 存到 ~/.dsh/deepseek-platform-token.txt（一行）。',
+        })
+      }
+
+      try {
+        const data = await buildUsage(days, token)
+        usageCache = { at: now, days, data }
+        sendJson(res, 200, data)
+      } catch (err) {
+        if (err && (err.code === 40003 || /invalid token/i.test(String(err.message || '')))) {
+          return sendJson(res, 502, {
+            ok: false,
+            error: 'Platform token expired or invalid',
+            errorZh: '平台登录凭证已失效，请重新获取 token 后更新 ~/.dsh/deepseek-platform-token.txt',
+          })
+        }
+        sendJson(res, 502, { ok: false, error: errText(err) })
+      }
+    },
+  }), 'dsh-github-profile: /gh-profile/usage')
 }
